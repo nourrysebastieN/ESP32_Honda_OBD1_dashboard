@@ -22,8 +22,9 @@
    MEMORY SETTINGS
  *====================*/
 
-/* Size of the memory available for `lv_malloc()` in bytes (>= 2kB) */
-#define LV_MEM_SIZE (128 * 1024U)
+/* Size of the memory available for `lv_malloc()` in bytes (>= 2kB).
+ * The Haltech-style widgets use larger shadows and style buffers, so we bump this. */
+#define LV_MEM_SIZE (512 * 1024U)
 
 /* Use the standard `malloc` and `free` from C library */
 #define LV_MEM_CUSTOM 0
@@ -49,6 +50,8 @@
 #define LV_DRAW_SW_COMPLEX 1
 #define LV_DRAW_SW_SHADOW_CACHE_SIZE 0
 #define LV_DRAW_SW_CIRCLE_CACHE_SIZE 4
+#define LV_USE_DRAW_SW_ASM LV_DRAW_SW_ASM_NONE
+#define LV_USE_DRAW_SW_COMPLEX_GRADIENTS 0
 
 /* GPU acceleration - disabled for ESP32 */
 #define LV_USE_GPU_SDL 0

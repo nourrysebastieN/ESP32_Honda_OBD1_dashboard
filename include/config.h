@@ -19,8 +19,8 @@
    ====================*/
 
 // Display dimensions
-#define DISPLAY_WIDTH  800
-#define DISPLAY_HEIGHT 480
+#define DISPLAY_WIDTH  1024
+#define DISPLAY_HEIGHT 600
 
 // Display backlight pin
 #define TFT_BL 45
@@ -145,7 +145,9 @@
    ====================*/
 
 // Enable debug output via Serial
+#ifndef DEBUG_ENABLED
 #define DEBUG_ENABLED 1
+#endif
 
 // Debug serial baud rate
 #define DEBUG_BAUD_RATE 115200

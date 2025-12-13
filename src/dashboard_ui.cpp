@@ -8,7 +8,12 @@
 
 #include "dashboard_ui.h"
 #include "config.h"
+#include "haltech_widget.h"
+#include <cstdio>
+
+#if defined(ARDUINO)
 #include <Arduino.h>
+#endif
 
 // Screen objects
 static lv_obj_t* mainScreen = nullptr;
@@ -17,16 +22,8 @@ static lv_obj_t* settingsScreen = nullptr;
 static lv_obj_t* diagnosticsScreen = nullptr;
 
 // Main screen widgets
-static lv_obj_t* rpmGauge = nullptr;
-static lv_obj_t* rpmNeedle = nullptr;
-static lv_obj_t* speedLabel = nullptr;
-static lv_obj_t* speedUnitLabel = nullptr;
-static lv_obj_t* coolantBar = nullptr;
-static lv_obj_t* coolantLabel = nullptr;
-static lv_obj_t* fuelBar = nullptr;
-static lv_obj_t* fuelLabel = nullptr;
-static lv_obj_t* batteryLabel = nullptr;
-static lv_obj_t* throttleBar = nullptr;
+static HaltechClusterWidget haltechCluster;
+static bool haltechClusterReady = false;
 static lv_obj_t* checkEngineIcon = nullptr;
 static lv_obj_t* connectionIcon = nullptr;
 
@@ -37,15 +34,71 @@ static DashboardScreen currentScreen = DashboardScreen::MAIN;
 static bool useMetricUnits = true;
 
 // Colors
-static const lv_color_t COLOR_BG = lv_color_hex(0x1A1A2E);
-static const lv_color_t COLOR_PRIMARY = lv_color_hex(0x16213E);
-static const lv_color_t COLOR_ACCENT = lv_color_hex(0x0F3460);
-static const lv_color_t COLOR_HIGHLIGHT = lv_color_hex(0xE94560);
-static const lv_color_t COLOR_SUCCESS = lv_color_hex(0x00FF88);
-static const lv_color_t COLOR_WARNING = lv_color_hex(0xFFAA00);
-static const lv_color_t COLOR_DANGER = lv_color_hex(0xFF4444);
-static const lv_color_t COLOR_TEXT = lv_color_hex(0xFFFFFF);
-static const lv_color_t COLOR_TEXT_DIM = lv_color_hex(0x888888);
+static const lv_color_t COLOR_BG = lv_color_hex(0x050506);
+static const lv_color_t COLOR_PRIMARY = lv_color_hex(0x0E1015);
+static const lv_color_t COLOR_ACCENT = lv_color_hex(0x181A22);
+static const lv_color_t COLOR_HIGHLIGHT = lv_color_hex(0xF0C44C);
+static const lv_color_t COLOR_SUCCESS = lv_color_hex(0x7ED957);
+static const lv_color_t COLOR_WARNING = lv_color_hex(0xFF9F43);
+static const lv_color_t COLOR_DANGER = lv_color_hex(0xFF4D4F);
+static const lv_color_t COLOR_TEXT = lv_color_hex(0xF6F6F6);
+static const lv_color_t COLOR_TEXT_DIM = lv_color_hex(0x7A7B85);
+
+static constexpr uint8_t CARD_LEFT_MAP = 0;
+static constexpr uint8_t CARD_LEFT_COOLANT = 1;
+static constexpr uint8_t CARD_LEFT_INTAKE = 2;
+static constexpr uint8_t CARD_LEFT_FUEL = 3;
+
+static constexpr uint8_t CARD_RIGHT_IGN = 0;
+static constexpr uint8_t CARD_RIGHT_TPS = 1;
+static constexpr uint8_t CARD_RIGHT_BATTERY = 2;
+static constexpr uint8_t CARD_RIGHT_INJECTOR = 3;
+
+static const HaltechClusterConfig HALTECH_CLUSTER_CONFIG = {
+    false,
+    {
+        "TACHO",
+        "RPM",
+        "Haltech",
+        "km/h",
+        0,
+        SPEED_MAX,
+        SPEED_WARNING,
+        SPEED_MAX - 10,
+        (SPEED_MAX / 10) + 1,
+        1,
+        -40,
+        false,
+        true,
+    },
+    {
+        "SPEED",
+        "km/h",
+        "uC10",
+        "km/h",
+        0,
+        SPEED_MAX,
+        SPEED_WARNING,
+        SPEED_MAX - 10,
+        33,
+        3,
+        -40,
+        true,
+        false,
+    },
+    {{
+        { "MAP", "kPa", 0, 120, false },
+        { "COOLANT", "°C", TEMP_MIN, TEMP_MAX, false },
+        { "INTAKE", "°C", TEMP_MIN - 20, TEMP_MAX - 10, false },
+        { "FUEL", "%", 0, 100, true },
+    }},
+    {{
+        { "IGN", "°", 0, 60, false },
+        { "TPS", "%", 0, 100, false },
+        { "BATTERY", "V", 10, 16, true },
+        { "INJECTOR", "ms", 0, 20, false },
+    }},
+};
 
 /**
  * @brief Create the main dashboard screen
@@ -53,211 +106,77 @@ static const lv_color_t COLOR_TEXT_DIM = lv_color_hex(0x888888);
 static void createMainScreen(void) {
     mainScreen = lv_obj_create(nullptr);
     lv_obj_set_style_bg_color(mainScreen, COLOR_BG, 0);
+    lv_obj_set_style_border_width(mainScreen, 0, 0);
+    lv_obj_clear_flag(mainScreen, LV_OBJ_FLAG_SCROLLABLE);
+    // Root container 
+    lv_obj_t* rootContainer = lv_obj_create(mainScreen);
+    lv_obj_set_size(rootContainer, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    lv_obj_set_style_bg_color(rootContainer, COLOR_BG, 0);
+    lv_obj_set_style_border_width(rootContainer, 0, 0);
+    lv_obj_set_style_pad_all(rootContainer, 20, 0);
+    lv_obj_set_flex_flow(rootContainer, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(rootContainer, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(rootContainer, LV_OBJ_FLAG_SCROLLABLE);
+    // Frame container
+    lv_obj_t* frame = lv_obj_create(rootContainer);
+    lv_obj_set_size(frame, DISPLAY_WIDTH - 40, DISPLAY_HEIGHT - 130);
+    lv_obj_set_style_bg_color(frame, COLOR_PRIMARY, 0);
+    lv_obj_set_style_bg_grad_color(frame, COLOR_ACCENT, 0);
+    lv_obj_set_style_bg_grad_dir(frame, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_border_color(frame, lv_color_hex(0x2B2C34), 0);
+    lv_obj_set_style_border_width(frame, 2, 0);
+    lv_obj_set_style_radius(frame, 30, 0);
+    lv_obj_set_style_shadow_color(frame, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_shadow_width(frame, 18, 0);
+    lv_obj_set_style_shadow_opa(frame, LV_OPA_30, 0);
+    lv_obj_set_style_pad_all(frame, 18, 0);
+    lv_obj_set_flex_flow(frame, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(frame, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(frame, LV_OBJ_FLAG_SCROLLABLE);
     
-    // Create main container with flex layout
-    lv_obj_t* mainContainer = lv_obj_create(mainScreen);
-    lv_obj_set_size(mainContainer, DISPLAY_WIDTH, DISPLAY_HEIGHT);
-    lv_obj_set_style_bg_color(mainContainer, COLOR_BG, 0);
-    lv_obj_set_style_border_width(mainContainer, 0, 0);
-    lv_obj_set_style_pad_all(mainContainer, 10, 0);
-    lv_obj_align(mainContainer, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_t* indicatorRow = lv_obj_create(frame);
+    lv_obj_set_width(indicatorRow, LV_PCT(100));
+    lv_obj_set_height(indicatorRow, 50);
+    lv_obj_set_style_bg_opa(indicatorRow, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(indicatorRow, 0, 0);
+    lv_obj_set_style_pad_all(indicatorRow, 0, 0);
+    lv_obj_set_flex_flow(indicatorRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(indicatorRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(indicatorRow, LV_OBJ_FLAG_SCROLLABLE);
     
-    // ==================
-    // RPM Gauge (Left side)
-    // ==================
-    rpmGauge = lv_meter_create(mainContainer);
-    lv_obj_set_size(rpmGauge, 280, 280);
-    lv_obj_align(rpmGauge, LV_ALIGN_LEFT_MID, 20, 0);
-    lv_obj_set_style_bg_color(rpmGauge, COLOR_PRIMARY, 0);
-    lv_obj_set_style_border_color(rpmGauge, COLOR_ACCENT, 0);
-    lv_obj_set_style_border_width(rpmGauge, 3, 0);
     
-    // Remove default indicator
-    lv_meter_set_scale_ticks(rpmGauge, 37, 2, 10, COLOR_TEXT_DIM);
-    lv_meter_set_scale_major_ticks(rpmGauge, 4, 4, 15, COLOR_TEXT, 15);
-    lv_meter_set_scale_range(rpmGauge, 0, 9000, 270, 135);
+    lv_obj_t* clusterArea = lv_obj_create(frame);
+    lv_obj_set_size(clusterArea, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_opa(clusterArea, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(clusterArea, 0, 0);
+    lv_obj_set_style_pad_all(clusterArea, 0, 0);
+    lv_obj_clear_flag(clusterArea, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(clusterArea, LV_FLEX_FLOW_COLUMN);
     
-    // Add colored arc sections
-    lv_meter_indicator_t* indic;
+    haltechClusterReady = haltech_cluster_init(haltechCluster, clusterArea, HALTECH_CLUSTER_CONFIG);
+    if (!haltechClusterReady) {
+        DEBUG_PRINTLN("WARNING: Failed to initialize Haltech cluster widget");
+    }
     
-    // Normal range (green tint)
-    indic = lv_meter_add_arc(rpmGauge, 12, COLOR_SUCCESS, 0);
-    lv_meter_set_indicator_start_value(rpmGauge, indic, 0);
-    lv_meter_set_indicator_end_value(rpmGauge, indic, 5000);
+    // lv_obj_t* statusBar = lv_obj_create(rootContainer);
+    // lv_obj_set_size(statusBar, DISPLAY_WIDTH - 40, 60);
+    // lv_obj_set_style_bg_color(statusBar, COLOR_PRIMARY, 0);
+    // lv_obj_set_style_border_width(statusBar, 0, 0);
+    // lv_obj_set_style_radius(statusBar, 16, 0);
+    // lv_obj_set_style_pad_all(statusBar, 20, 0);
+    // lv_obj_set_flex_flow(statusBar, LV_FLEX_FLOW_ROW);
+    // lv_obj_set_flex_align(statusBar, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    // lv_obj_clear_flag(statusBar, LV_OBJ_FLAG_SCROLLABLE);
     
-    // Mid range (yellow)
-    indic = lv_meter_add_arc(rpmGauge, 12, COLOR_WARNING, 0);
-    lv_meter_set_indicator_start_value(rpmGauge, indic, 5000);
-    lv_meter_set_indicator_end_value(rpmGauge, indic, 7000);
+    // checkEngineIcon = lv_label_create(statusBar);
+    // lv_label_set_text(checkEngineIcon, LV_SYMBOL_WARNING " CHECK ENGINE");
+    // lv_obj_set_style_text_font(checkEngineIcon, &lv_font_montserrat_16, 0);
+    // lv_obj_set_style_text_color(checkEngineIcon, COLOR_TEXT_DIM, 0);
     
-    // Redline (red)
-    indic = lv_meter_add_arc(rpmGauge, 12, COLOR_DANGER, 0);
-    lv_meter_set_indicator_start_value(rpmGauge, indic, 7000);
-    lv_meter_set_indicator_end_value(rpmGauge, indic, 9000);
-    
-    // Add needle
-    rpmNeedle = (lv_obj_t*)lv_meter_add_needle_line(rpmGauge, 5, COLOR_HIGHLIGHT, -15);
-    lv_meter_set_indicator_value(rpmGauge, (lv_meter_indicator_t*)rpmNeedle, 0);
-    
-    // RPM label
-    lv_obj_t* rpmTextLabel = lv_label_create(rpmGauge);
-    lv_label_set_text(rpmTextLabel, "RPM");
-    lv_obj_set_style_text_font(rpmTextLabel, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(rpmTextLabel, COLOR_TEXT, 0);
-    lv_obj_align(rpmTextLabel, LV_ALIGN_CENTER, 0, 60);
-    
-    // ==================
-    // Speed Display (Center)
-    // ==================
-    lv_obj_t* speedContainer = lv_obj_create(mainContainer);
-    lv_obj_set_size(speedContainer, 200, 200);
-    lv_obj_align(speedContainer, LV_ALIGN_CENTER, 0, -20);
-    lv_obj_set_style_bg_color(speedContainer, COLOR_PRIMARY, 0);
-    lv_obj_set_style_border_color(speedContainer, COLOR_ACCENT, 0);
-    lv_obj_set_style_border_width(speedContainer, 2, 0);
-    lv_obj_set_style_radius(speedContainer, 20, 0);
-    
-    speedLabel = lv_label_create(speedContainer);
-    lv_label_set_text(speedLabel, "0");
-    lv_obj_set_style_text_font(speedLabel, &lv_font_montserrat_48, 0);
-    lv_obj_set_style_text_color(speedLabel, COLOR_TEXT, 0);
-    lv_obj_align(speedLabel, LV_ALIGN_CENTER, 0, -10);
-    
-    speedUnitLabel = lv_label_create(speedContainer);
-    lv_label_set_text(speedUnitLabel, "km/h");
-    lv_obj_set_style_text_font(speedUnitLabel, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(speedUnitLabel, COLOR_TEXT_DIM, 0);
-    lv_obj_align(speedUnitLabel, LV_ALIGN_CENTER, 0, 40);
-    
-    // ==================
-    // Right Side - Bars and Info
-    // ==================
-    lv_obj_t* rightPanel = lv_obj_create(mainContainer);
-    lv_obj_set_size(rightPanel, 250, 400);
-    lv_obj_align(rightPanel, LV_ALIGN_RIGHT_MID, -20, 0);
-    lv_obj_set_style_bg_color(rightPanel, COLOR_PRIMARY, 0);
-    lv_obj_set_style_border_width(rightPanel, 0, 0);
-    lv_obj_set_style_pad_all(rightPanel, 15, 0);
-    lv_obj_set_flex_flow(rightPanel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(rightPanel, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    
-    // Coolant Temperature
-    lv_obj_t* coolantContainer = lv_obj_create(rightPanel);
-    lv_obj_set_size(coolantContainer, 220, 60);
-    lv_obj_set_style_bg_color(coolantContainer, lv_color_hex(0x0A0A15), 0);
-    lv_obj_set_style_border_width(coolantContainer, 0, 0);
-    lv_obj_set_style_radius(coolantContainer, 10, 0);
-    
-    lv_obj_t* coolantTitle = lv_label_create(coolantContainer);
-    lv_label_set_text(coolantTitle, "COOLANT");
-    lv_obj_set_style_text_font(coolantTitle, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(coolantTitle, COLOR_TEXT_DIM, 0);
-    lv_obj_align(coolantTitle, LV_ALIGN_TOP_LEFT, 5, 5);
-    
-    coolantBar = lv_bar_create(coolantContainer);
-    lv_obj_set_size(coolantBar, 180, 15);
-    lv_obj_align(coolantBar, LV_ALIGN_BOTTOM_LEFT, 5, -8);
-    lv_bar_set_range(coolantBar, TEMP_MIN, TEMP_MAX);
-    lv_bar_set_value(coolantBar, TEMP_MIN, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(coolantBar, COLOR_ACCENT, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(coolantBar, COLOR_SUCCESS, LV_PART_INDICATOR);
-    
-    coolantLabel = lv_label_create(coolantContainer);
-    lv_label_set_text(coolantLabel, "-- °C");
-    lv_obj_set_style_text_font(coolantLabel, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(coolantLabel, COLOR_TEXT, 0);
-    lv_obj_align(coolantLabel, LV_ALIGN_TOP_RIGHT, -5, 5);
-    
-    // Fuel Level
-    lv_obj_t* fuelContainer = lv_obj_create(rightPanel);
-    lv_obj_set_size(fuelContainer, 220, 60);
-    lv_obj_set_style_bg_color(fuelContainer, lv_color_hex(0x0A0A15), 0);
-    lv_obj_set_style_border_width(fuelContainer, 0, 0);
-    lv_obj_set_style_radius(fuelContainer, 10, 0);
-    
-    lv_obj_t* fuelTitle = lv_label_create(fuelContainer);
-    lv_label_set_text(fuelTitle, "FUEL");
-    lv_obj_set_style_text_font(fuelTitle, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(fuelTitle, COLOR_TEXT_DIM, 0);
-    lv_obj_align(fuelTitle, LV_ALIGN_TOP_LEFT, 5, 5);
-    
-    fuelBar = lv_bar_create(fuelContainer);
-    lv_obj_set_size(fuelBar, 180, 15);
-    lv_obj_align(fuelBar, LV_ALIGN_BOTTOM_LEFT, 5, -8);
-    lv_bar_set_range(fuelBar, 0, 100);
-    lv_bar_set_value(fuelBar, 50, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(fuelBar, COLOR_ACCENT, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(fuelBar, COLOR_SUCCESS, LV_PART_INDICATOR);
-    
-    fuelLabel = lv_label_create(fuelContainer);
-    lv_label_set_text(fuelLabel, "-- %");
-    lv_obj_set_style_text_font(fuelLabel, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(fuelLabel, COLOR_TEXT, 0);
-    lv_obj_align(fuelLabel, LV_ALIGN_TOP_RIGHT, -5, 5);
-    
-    // Throttle Position
-    lv_obj_t* throttleContainer = lv_obj_create(rightPanel);
-    lv_obj_set_size(throttleContainer, 220, 60);
-    lv_obj_set_style_bg_color(throttleContainer, lv_color_hex(0x0A0A15), 0);
-    lv_obj_set_style_border_width(throttleContainer, 0, 0);
-    lv_obj_set_style_radius(throttleContainer, 10, 0);
-    
-    lv_obj_t* throttleTitle = lv_label_create(throttleContainer);
-    lv_label_set_text(throttleTitle, "THROTTLE");
-    lv_obj_set_style_text_font(throttleTitle, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(throttleTitle, COLOR_TEXT_DIM, 0);
-    lv_obj_align(throttleTitle, LV_ALIGN_TOP_LEFT, 5, 5);
-    
-    throttleBar = lv_bar_create(throttleContainer);
-    lv_obj_set_size(throttleBar, 180, 15);
-    lv_obj_align(throttleBar, LV_ALIGN_BOTTOM_LEFT, 5, -8);
-    lv_bar_set_range(throttleBar, 0, 100);
-    lv_bar_set_value(throttleBar, 0, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(throttleBar, COLOR_ACCENT, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(throttleBar, COLOR_HIGHLIGHT, LV_PART_INDICATOR);
-    
-    // Battery Voltage
-    lv_obj_t* batteryContainer = lv_obj_create(rightPanel);
-    lv_obj_set_size(batteryContainer, 220, 50);
-    lv_obj_set_style_bg_color(batteryContainer, lv_color_hex(0x0A0A15), 0);
-    lv_obj_set_style_border_width(batteryContainer, 0, 0);
-    lv_obj_set_style_radius(batteryContainer, 10, 0);
-    
-    lv_obj_t* batteryTitle = lv_label_create(batteryContainer);
-    lv_label_set_text(batteryTitle, "BATTERY");
-    lv_obj_set_style_text_font(batteryTitle, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(batteryTitle, COLOR_TEXT_DIM, 0);
-    lv_obj_align(batteryTitle, LV_ALIGN_LEFT_MID, 10, 0);
-    
-    batteryLabel = lv_label_create(batteryContainer);
-    lv_label_set_text(batteryLabel, "-- V");
-    lv_obj_set_style_text_font(batteryLabel, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(batteryLabel, COLOR_TEXT, 0);
-    lv_obj_align(batteryLabel, LV_ALIGN_RIGHT_MID, -10, 0);
-    
-    // ==================
-    // Bottom Status Bar
-    // ==================
-    lv_obj_t* statusBar = lv_obj_create(mainContainer);
-    lv_obj_set_size(statusBar, DISPLAY_WIDTH - 40, 50);
-    lv_obj_align(statusBar, LV_ALIGN_BOTTOM_MID, 0, -5);
-    lv_obj_set_style_bg_color(statusBar, COLOR_PRIMARY, 0);
-    lv_obj_set_style_border_width(statusBar, 0, 0);
-    lv_obj_set_style_radius(statusBar, 10, 0);
-    lv_obj_set_flex_flow(statusBar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(statusBar, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    
-    // Check Engine Light
-    checkEngineIcon = lv_label_create(statusBar);
-    lv_label_set_text(checkEngineIcon, LV_SYMBOL_WARNING " CEL");
-    lv_obj_set_style_text_font(checkEngineIcon, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(checkEngineIcon, COLOR_TEXT_DIM, 0);
-    
-    // Connection Status
-    connectionIcon = lv_label_create(statusBar);
-    lv_label_set_text(connectionIcon, LV_SYMBOL_WIFI " ECU");
-    lv_obj_set_style_text_font(connectionIcon, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(connectionIcon, COLOR_DANGER, 0);
+    // connectionIcon = lv_label_create(statusBar);
+    // lv_label_set_text(connectionIcon, LV_SYMBOL_WIFI " ECU LINK");
+    // lv_obj_set_style_text_font(connectionIcon, &lv_font_montserrat_16, 0);
+    // lv_obj_set_style_text_color(connectionIcon, COLOR_DANGER, 0);
 }
 
 /**
@@ -387,14 +306,24 @@ void init(void) {
 }
 
 void update(const OBD1Data& data) {
-    if (currentScreen == DashboardScreen::MAIN) {
-        setRPM(data.rpm);
-        setSpeed(data.speed);
-        setCoolantTemp(data.coolantTemp);
-        setThrottlePosition(data.throttlePosition);
-        setBatteryVoltage(data.batteryVoltage / 10.0f);
-        showCheckEngine(data.checkEngine);
-        setConnectionStatus(data.connected);
+    if (currentScreen != DashboardScreen::MAIN) {
+        return;
+    }
+
+    setRPM(data.rpm);
+    setSpeed(data.speed);
+    setCoolantTemp(data.coolantTemp);
+    setThrottlePosition(data.throttlePosition);
+    setBatteryVoltage(data.batteryVoltage / 10.0f);
+    showCheckEngine(data.checkEngine);
+    setConnectionStatus(data.connected);
+
+    if (haltechClusterReady) {
+        haltech_cluster_set_card_value(haltechCluster, true, CARD_LEFT_MAP, data.mapPressure);
+        haltech_cluster_set_card_value(haltechCluster, true, CARD_LEFT_INTAKE, data.intakeTemp);
+        haltech_cluster_set_card_value(haltechCluster, false, CARD_RIGHT_IGN, data.ignitionAdvance);
+        const float injectorMs = static_cast<float>(data.injectorPulse) / 10.0f;
+        haltech_cluster_set_card_value(haltechCluster, false, CARD_RIGHT_INJECTOR, injectorMs);
     }
 }
 
@@ -427,78 +356,54 @@ DashboardScreen getCurrentScreen(void) {
 }
 
 void setRPM(uint16_t rpm) {
-    if (rpmNeedle != nullptr) {
-        lv_meter_set_indicator_value(rpmGauge, (lv_meter_indicator_t*)rpmNeedle, rpm);
+    if (!haltechClusterReady) {
+        return;
     }
+    uint16_t clamped = rpm;
+    if (clamped > RPM_MAX) {
+        clamped = RPM_MAX;
+    }
+    haltech_cluster_set_digital_value(haltechCluster, true, clamped, RPM_WARNING, RPM_REDLINE);
 }
 
 void setSpeed(uint8_t speed) {
-    if (speedLabel != nullptr) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%d", speed);
-        lv_label_set_text(speedLabel, buf);
+    if (!haltechClusterReady) {
+        return;
     }
+    uint16_t clamped = speed;
+    if (clamped > SPEED_MAX) {
+        clamped = SPEED_MAX;
+    }
+    haltech_cluster_set_left_value(haltechCluster, clamped);
+    haltech_cluster_set_center_value(haltechCluster, true, clamped);
 }
 
 void setCoolantTemp(uint8_t temp) {
-    if (coolantBar != nullptr && coolantLabel != nullptr) {
-        lv_bar_set_value(coolantBar, temp, LV_ANIM_ON);
-        
-        // Update color based on temperature
-        if (temp >= TEMP_WARNING) {
-            lv_obj_set_style_bg_color(coolantBar, COLOR_DANGER, LV_PART_INDICATOR);
-        } else if (temp >= TEMP_WARNING - 10) {
-            lv_obj_set_style_bg_color(coolantBar, COLOR_WARNING, LV_PART_INDICATOR);
-        } else {
-            lv_obj_set_style_bg_color(coolantBar, COLOR_SUCCESS, LV_PART_INDICATOR);
-        }
-        
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%d °C", temp);
-        lv_label_set_text(coolantLabel, buf);
+    if (!haltechClusterReady) {
+        return;
     }
+    haltech_cluster_set_card_value(haltechCluster, true, CARD_LEFT_COOLANT, temp);
 }
 
 void setFuelLevel(uint8_t level) {
-    if (fuelBar != nullptr && fuelLabel != nullptr) {
-        lv_bar_set_value(fuelBar, level, LV_ANIM_ON);
-        
-        // Update color based on fuel level
-        if (level <= FUEL_WARNING) {
-            lv_obj_set_style_bg_color(fuelBar, COLOR_DANGER, LV_PART_INDICATOR);
-        } else if (level <= FUEL_WARNING + 10) {
-            lv_obj_set_style_bg_color(fuelBar, COLOR_WARNING, LV_PART_INDICATOR);
-        } else {
-            lv_obj_set_style_bg_color(fuelBar, COLOR_SUCCESS, LV_PART_INDICATOR);
-        }
-        
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%d %%", level);
-        lv_label_set_text(fuelLabel, buf);
+    if (!haltechClusterReady) {
+        return;
     }
+    haltech_cluster_set_card_value(haltechCluster, true, CARD_LEFT_FUEL, level);
 }
 
 void setThrottlePosition(uint8_t position) {
-    if (throttleBar != nullptr) {
-        lv_bar_set_value(throttleBar, position, LV_ANIM_ON);
+    if (!haltechClusterReady) {
+        return;
     }
+    haltech_cluster_set_card_value(haltechCluster, false, CARD_RIGHT_TPS, position);
 }
 
 void setBatteryVoltage(float voltage) {
-    if (batteryLabel != nullptr) {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%.1f V", voltage);
-        lv_label_set_text(batteryLabel, buf);
-        
-        // Update color based on voltage
-        if (voltage < 11.5f || voltage > 15.0f) {
-            lv_obj_set_style_text_color(batteryLabel, COLOR_DANGER, 0);
-        } else if (voltage < 12.2f) {
-            lv_obj_set_style_text_color(batteryLabel, COLOR_WARNING, 0);
-        } else {
-            lv_obj_set_style_text_color(batteryLabel, COLOR_SUCCESS, 0);
-        }
+    if (!haltechClusterReady) {
+        return;
     }
+    haltech_cluster_set_card_value(haltechCluster, false, CARD_RIGHT_BATTERY, voltage);
 }
 
 void showCheckEngine(bool show) {
@@ -523,8 +428,9 @@ void setConnectionStatus(bool connected) {
 
 void setMetricUnits(bool useMetric) {
     useMetricUnits = useMetric;
-    if (speedUnitLabel != nullptr) {
-        lv_label_set_text(speedUnitLabel, useMetric ? "km/h" : "mph");
+    if (haltechClusterReady) {
+        const char* unit = useMetric ? "km/h" : "mph";
+        haltech_cluster_set_center_unit(haltechCluster, true, unit);
     }
 }
 
@@ -539,20 +445,40 @@ lv_obj_t* getMainScreen(void) {
 }
 
 lv_obj_t* createGauge(lv_obj_t* parent, int32_t min, int32_t max, int32_t warning) {
-    lv_obj_t* gauge = lv_meter_create(parent);
+    static lv_style_t gaugeWarningStyle;
+    static bool gaugeWarningStyleInit = false;
+    
+    if (!gaugeWarningStyleInit) {
+        lv_style_init(&gaugeWarningStyle);
+        lv_style_set_arc_color(&gaugeWarningStyle, COLOR_DANGER);
+        lv_style_set_arc_width(&gaugeWarningStyle, 10);
+        gaugeWarningStyleInit = true;
+    }
+    
+    lv_obj_t* gauge = lv_scale_create(parent);
     lv_obj_set_size(gauge, 200, 200);
     lv_obj_set_style_bg_color(gauge, COLOR_PRIMARY, 0);
+    lv_obj_set_style_bg_opa(gauge, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(gauge, COLOR_ACCENT, 0);
     lv_obj_set_style_border_width(gauge, 2, 0);
+    lv_obj_set_style_radius(gauge, LV_RADIUS_CIRCLE, 0);
     
-    lv_meter_set_scale_ticks(gauge, 21, 2, 10, COLOR_TEXT_DIM);
-    lv_meter_set_scale_major_ticks(gauge, 4, 4, 15, COLOR_TEXT, 15);
-    lv_meter_set_scale_range(gauge, min, max, 270, 135);
+    lv_scale_set_mode(gauge, LV_SCALE_MODE_ROUND_OUTER);
+    lv_scale_set_label_show(gauge, false);
+    lv_scale_set_range(gauge, min, max);
+    lv_scale_set_angle_range(gauge, 270);
+    lv_scale_set_rotation(gauge, 135);
+    lv_scale_set_total_tick_count(gauge, 21);
+    lv_scale_set_major_tick_every(gauge, 4);
     
-    // Add warning zone
-    lv_meter_indicator_t* indic = lv_meter_add_arc(gauge, 10, COLOR_DANGER, 0);
-    lv_meter_set_indicator_start_value(gauge, indic, warning);
-    lv_meter_set_indicator_end_value(gauge, indic, max);
+    lv_obj_set_style_length(gauge, 14, LV_PART_INDICATOR);
+    lv_obj_set_style_length(gauge, 8, LV_PART_ITEMS);
+    lv_obj_set_style_line_width(gauge, 3, LV_PART_INDICATOR);
+    lv_obj_set_style_line_width(gauge, 2, LV_PART_ITEMS);
+    
+    lv_scale_section_t* warningSection = lv_scale_add_section(gauge);
+    lv_scale_section_set_range(warningSection, warning, max);
+    lv_scale_section_set_style(warningSection, LV_PART_MAIN, &gaugeWarningStyle);
     
     return gauge;
 }
