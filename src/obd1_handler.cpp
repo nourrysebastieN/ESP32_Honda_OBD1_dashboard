@@ -66,7 +66,7 @@ static uint8_t queryECU(uint8_t address) {
         if (millis() - startTime > 100) {  // 100ms timeout
             return 0xFF;  // Timeout
         }
-        delayMicroseconds(100);
+        vTaskDelay(1);
     }
     
     return OBD1Serial.read();

@@ -19,47 +19,77 @@
    ====================*/
 
 // Display dimensions
-#define DISPLAY_WIDTH  1024
-#define DISPLAY_HEIGHT 600
+#ifndef DISPLAY_WIDTH
+  #define DISPLAY_WIDTH  800
+#endif
 
-// Display backlight pin
-#define TFT_BL 45
+#ifndef DISPLAY_HEIGHT
+  #define DISPLAY_HEIGHT 480
+#endif
 
-// Display SPI pins (for SPI-based displays)
-#define TFT_MOSI 11
-#define TFT_MISO 13
-#define TFT_SCLK 12
-#define TFT_CS   10
-#define TFT_DC   46
-#define TFT_RST  -1  // Connected to EN/Reset
+// Makerfabs MaTouch ESP32-S3 7" RGB panel (1024x600)
+#if defined(DISPLAY_MAKERFABS_MATOUCH_1024X600)
+  #undef DISPLAY_WIDTH
+  #undef DISPLAY_HEIGHT
+  #define DISPLAY_WIDTH  1024
+  #define DISPLAY_HEIGHT 600
 
-// For RGB parallel displays (common for 7" displays)
-// Uncomment and configure if using RGB interface
-/*
-#define TFT_DE   40
-#define TFT_VSYNC 41
-#define TFT_HSYNC 39
-#define TFT_PCLK  42
+  #ifndef DISPLAY_USE_RGB
+    #define DISPLAY_USE_RGB 1
+  #endif
 
-#define TFT_R0   45
-#define TFT_R1   48
-#define TFT_R2   47
-#define TFT_R3   21
-#define TFT_R4   14
+  // Backlight (PWM)
+  #define TFT_BL 10
+  #define TFT_BL_INVERT 1
 
-#define TFT_G0   5
-#define TFT_G1   6
-#define TFT_G2   7
-#define TFT_G3   15
-#define TFT_G4   16
-#define TFT_G5   4
+  // RGB interface pins (LovyanGFX Bus_RGB 16-bit)
+  #define TFT_DE    40
+  #define TFT_VSYNC 41
+  #define TFT_HSYNC 39
+  #define TFT_PCLK  42
 
-#define TFT_B0   8
-#define TFT_B1   3
-#define TFT_B2   46
-#define TFT_B3   9
-#define TFT_B4   1
-*/
+  #define TFT_B0  8
+  #define TFT_B1  3
+  #define TFT_B2  46
+  #define TFT_B3  9
+  #define TFT_B4  1
+
+  #define TFT_G0  5
+  #define TFT_G1  6
+  #define TFT_G2  7
+  #define TFT_G3  15
+  #define TFT_G4  16
+  #define TFT_G5  4
+
+  #define TFT_R0  45
+  #define TFT_R1  48
+  #define TFT_R2  47
+  #define TFT_R3  21
+  #define TFT_R4  14
+
+  // RGB timing (known-good defaults from LovyanGFX Makerfabs profile)
+  #define TFT_HSYNC_POLARITY     0
+  #define TFT_HSYNC_FRONT_PORCH  80
+  #define TFT_HSYNC_PULSE_WIDTH  4
+  #define TFT_HSYNC_BACK_PORCH   16
+  #define TFT_VSYNC_POLARITY     0
+  #define TFT_VSYNC_FRONT_PORCH  22
+  #define TFT_VSYNC_PULSE_WIDTH  4
+  #define TFT_VSYNC_BACK_PORCH   4
+  #define TFT_PCLK_IDLE_HIGH     1
+  #define TFT_PCLK_FREQ          16000000
+#else
+  // Display backlight pin (SPI-based display default)
+  #define TFT_BL 45
+
+  // Display SPI pins (for SPI-based displays)
+  #define TFT_MOSI 11
+  #define TFT_MISO 13
+  #define TFT_SCLK 12
+  #define TFT_CS   10
+  #define TFT_DC   46
+  #define TFT_RST  -1  // Connected to EN/Reset
+#endif
 
 /*====================
    TOUCH CONFIGURATION
@@ -68,8 +98,16 @@
 // I2C Touch controller pins (GT911 or similar)
 #define TOUCH_SDA 17
 #define TOUCH_SCL 18
-#define TOUCH_INT 38
-#define TOUCH_RST 16
+
+#if defined(DISPLAY_MAKERFABS_MATOUCH_1024X600)
+  #define TOUCH_INT -1
+  #define TOUCH_RST 38
+  #define TOUCH_I2C_PORT 1
+#else
+  #define TOUCH_INT 38
+  #define TOUCH_RST 16
+  #define TOUCH_I2C_PORT 0
+#endif
 
 /*====================
    OBD1 CONFIGURATION
@@ -94,7 +132,11 @@
    ====================*/
 
 // Onboard RGB LED (ESP32-S3 DevKitC-1)
-#define LED_PIN 48
+#if defined(DISPLAY_MAKERFABS_MATOUCH_1024X600)
+  #define LED_PIN -1
+#else
+  #define LED_PIN 48
+#endif
 
 // External status LED
 #define STATUS_LED_PIN 2

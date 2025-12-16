@@ -31,8 +31,8 @@ struct HaltechGaugeConfig {
     uint16_t totalTicks;
     uint8_t majorTickEvery;
     int16_t needleOffset;
-    bool syncDigital = true;
-    bool showLabels = false;
+    bool syncDigital;
+    bool showLabels;
 };
 
 /**

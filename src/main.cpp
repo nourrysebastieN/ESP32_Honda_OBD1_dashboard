@@ -107,6 +107,7 @@ bool initializeSystem(void) {
     DEBUG_PRINTLN("\n================================");
     DEBUG_PRINTLN("System initialization complete!");
     DEBUG_PRINTLN("================================\n");
+    Serial.println("System initialization complete!");
     
     return true;
 }
@@ -120,12 +121,18 @@ void setup() {
     if (!initializeSystem()) {
         DEBUG_PRINTLN("FATAL: System initialization failed!");
         // Blink LED to indicate error
-        pinMode(LED_PIN, OUTPUT);
+        if (LED_PIN >= 0) {
+            pinMode(LED_PIN, OUTPUT);
+        }
         while (true) {
-            digitalWrite(LED_PIN, HIGH);
-            delay(200);
-            digitalWrite(LED_PIN, LOW);
-            delay(200);
+            if (LED_PIN >= 0) {
+                digitalWrite(LED_PIN, HIGH);
+                delay(200);
+                digitalWrite(LED_PIN, LOW);
+                delay(200);
+            } else {
+                delay(1000);
+            }
         }
     }
     
