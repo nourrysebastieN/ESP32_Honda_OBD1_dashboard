@@ -30,6 +30,29 @@ static TaskHandle_t obd1TaskHandle = nullptr;
 static unsigned long lastLvglUpdate = 0;
 static unsigned long lastObd1Update = 0;
 
+constexpr uint32_t KEY_HOLD_TIMEOUT_MS = 200;
+constexpr float RPM_RAMP_UP_PER_SEC = 4500.0f;
+constexpr float RPM_RAMP_DOWN_PER_SEC = 5500.0f;
+constexpr float SPEED_RAMP_UP_PER_SEC = 120.0f;
+constexpr float SPEED_RAMP_DOWN_PER_SEC = 160.0f;
+constexpr float TEMP_RAMP_UP_PER_SEC = 35.0f;
+constexpr float TEMP_RAMP_DOWN_PER_SEC = 45.0f;
+
+static float simRpm = 0.0f;
+static float simSpeed = 0.0f;
+static float simTemp = static_cast<float>(TEMP_MIN);
+static unsigned long lastRKeyMs = 0;
+static unsigned long lastSKeyMs = 0;
+static unsigned long lastTKeyMs = 0;
+static bool rampRpmActive = false;
+static bool rampSpeedActive = false;
+static bool rampTempActive = false;
+static unsigned long lastSimTickMs = 0;
+
+static bool onClearDtcRequest(void) {
+    return OBD1Handler::clearDTCs();
+}
+
 /**
  * @brief LVGL update task
  * Runs on Core 1 to handle display updates
@@ -92,6 +115,7 @@ bool initializeSystem(void) {
     
     // Set OBD1 data callback
     OBD1Handler::setDataCallback(onOBD1DataReceived);
+    DashboardUI::setClearDtcCallback(onClearDtcRequest);
     
     // Create LVGL task on Core 1
     xTaskCreatePinnedToCore(
@@ -154,7 +178,11 @@ void loop() {
     // This loop handles any non-time-critical operations
     
     // Check for serial commands (for debugging)
-    if (Serial.available()) {
+    const unsigned long now = millis();
+    const float dt = (lastSimTickMs == 0) ? 0.0f : (now - lastSimTickMs) / 1000.0f;
+    lastSimTickMs = now;
+
+    while (Serial.available()) {
         char cmd = Serial.read();
         
         switch (cmd) {
@@ -163,28 +191,33 @@ void loop() {
                 DEBUG_PRINTLN("Switched to Main screen");
                 break;
             case '2':
-                DashboardUI::switchScreen(DashboardScreen::DETAILED);
-                DEBUG_PRINTLN("Switched to Detailed screen");
-                break;
-            case '3':
                 DashboardUI::switchScreen(DashboardScreen::SETTINGS);
                 DEBUG_PRINTLN("Switched to Settings screen");
                 break;
-            case '4':
+            case '3':
                 DashboardUI::switchScreen(DashboardScreen::DIAGNOSTICS);
                 DEBUG_PRINTLN("Switched to Diagnostics screen");
                 break;
             case 'r':
-                // Simulate RPM change for testing
-                DashboardUI::setRPM(random(800, 7000));
+                lastRKeyMs = now;
+                rampRpmActive = true;
+                if (simRpm <= 0.0f) {
+                    simRpm = 0.0f;
+                }
                 break;
             case 's':
-                // Simulate speed change for testing
-                DashboardUI::setSpeed(random(0, 160));
+                lastSKeyMs = now;
+                rampSpeedActive = true;
+                if (simSpeed <= 0.0f) {
+                    simSpeed = 0.0f;
+                }
                 break;
             case 't':
-                // Simulate temperature change for testing
-                DashboardUI::setCoolantTemp(random(60, 120));
+                lastTKeyMs = now;
+                rampTempActive = true;
+                if (simTemp < static_cast<float>(TEMP_MIN)) {
+                    simTemp = static_cast<float>(TEMP_MIN);
+                }
                 break;
             case 'i':
                 // Print system info
@@ -195,14 +228,71 @@ void loop() {
             case 'h':
             case '?':
                 DEBUG_PRINTLN("\n--- Debug Commands ---");
-                DEBUG_PRINTLN("1-4: Switch screens");
-                DEBUG_PRINTLN("r: Random RPM");
-                DEBUG_PRINTLN("s: Random Speed");
-                DEBUG_PRINTLN("t: Random Temperature");
+                DEBUG_PRINTLN("1-3: Switch screens");
+                DEBUG_PRINTLN("hold r: Ramp RPM");
+                DEBUG_PRINTLN("hold s: Ramp Speed");
+                DEBUG_PRINTLN("hold t: Ramp Temperature");
                 DEBUG_PRINTLN("i: System info");
                 DEBUG_PRINTLN("h/?: This help");
                 DEBUG_PRINTLN("--------------------\n");
                 break;
+        }
+    }
+
+    if (rampRpmActive) {
+        const bool holding = (now - lastRKeyMs) < KEY_HOLD_TIMEOUT_MS;
+        if (holding) {
+            simRpm += RPM_RAMP_UP_PER_SEC * dt;
+            if (simRpm > RPM_REDLINE) {
+                simRpm = RPM_REDLINE;
+            }
+        } else {
+            simRpm -= RPM_RAMP_DOWN_PER_SEC * dt;
+            if (simRpm < 0.0f) {
+                simRpm = 0.0f;
+            }
+        }
+        DashboardUI::setRPM(static_cast<uint16_t>(simRpm + 0.5f));
+        if (!holding && simRpm <= 0.0f) {
+            rampRpmActive = false;
+        }
+    }
+
+    if (rampSpeedActive) {
+        const bool holding = (now - lastSKeyMs) < KEY_HOLD_TIMEOUT_MS;
+        if (holding) {
+            simSpeed += SPEED_RAMP_UP_PER_SEC * dt;
+            if (simSpeed > SPEED_MAX) {
+                simSpeed = SPEED_MAX;
+            }
+        } else {
+            simSpeed -= SPEED_RAMP_DOWN_PER_SEC * dt;
+            if (simSpeed < 0.0f) {
+                simSpeed = 0.0f;
+            }
+        }
+        DashboardUI::setSpeed(static_cast<uint8_t>(simSpeed + 0.5f));
+        if (!holding && simSpeed <= 0.0f) {
+            rampSpeedActive = false;
+        }
+    }
+
+    if (rampTempActive) {
+        const bool holding = (now - lastTKeyMs) < KEY_HOLD_TIMEOUT_MS;
+        if (holding) {
+            simTemp += TEMP_RAMP_UP_PER_SEC * dt;
+            if (simTemp > TEMP_MAX) {
+                simTemp = TEMP_MAX;
+            }
+        } else {
+            simTemp -= TEMP_RAMP_DOWN_PER_SEC * dt;
+            if (simTemp < static_cast<float>(TEMP_MIN)) {
+                simTemp = static_cast<float>(TEMP_MIN);
+            }
+        }
+        DashboardUI::setCoolantTemp(static_cast<uint8_t>(simTemp + 0.5f));
+        if (!holding && simTemp <= static_cast<float>(TEMP_MIN)) {
+            rampTempActive = false;
         }
     }
     

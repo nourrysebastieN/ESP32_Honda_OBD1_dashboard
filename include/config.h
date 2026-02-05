@@ -121,11 +121,11 @@
 #define OBD1_RX_PIN 44
 #define OBD1_TX_PIN 43
 
-// Honda OBD1 baud rate (9600 baud for most Honda ECUs)
-#define OBD1_BAUD_RATE 9600
+// Honda OBD1 datalogging baud rate (38400 baud)
+#define OBD1_BAUD_RATE 38400
 
 // OBD1 data request interval (ms)
-#define OBD1_REQUEST_INTERVAL 50
+#define OBD1_REQUEST_INTERVAL 30
 
 /*====================
    LED/STATUS INDICATORS

@@ -21,6 +21,49 @@ const lv_color_t COLOR_TEXT = lv_color_hex(0xF5F5F5);
 const lv_color_t COLOR_TEXT_DIM = lv_color_hex(0x7A7B85);
 const lv_color_t COLOR_NEEDLE = lv_color_hex(0xE44A3A);
 
+constexpr int32_t GAUGE_CONTAINER_MAX = 480;
+constexpr int32_t GAUGE_CONTAINER_MIN = 220;
+constexpr int32_t GAUGE_LABEL_PADDING = 52;
+constexpr int16_t GAUGE_OVERLAP = 0;
+constexpr int32_t CARD_COLUMN_WIDTH = 180;
+constexpr int32_t CARD_HEIGHT = 96;
+constexpr int32_t CARD_PADDING = 12;
+constexpr int32_t CARD_BAR_HEIGHT = 12;
+
+template <typename T>
+T clamp_value(T value, T minValue, T maxValue);
+
+void size_gauge_to_parent(HaltechGaugeElements& gauge, lv_obj_t* parent, bool dualGauge) {
+    if (gauge.container == nullptr || gauge.scale == nullptr || parent == nullptr) {
+        return;
+    }
+
+    const int32_t parentWidth = lv_obj_get_content_width(parent);
+    const int32_t parentHeight = lv_obj_get_content_height(parent);
+    if (parentWidth <= 0 || parentHeight <= 0) {
+        return;
+    }
+
+    int32_t maxWidth = parentWidth;
+    if (dualGauge) {
+        maxWidth = parentWidth / 2;
+    }
+
+    int32_t size = std::min(parentHeight, maxWidth);
+    size = clamp_value(size, GAUGE_CONTAINER_MIN, GAUGE_CONTAINER_MAX);
+
+    lv_obj_set_size(gauge.container, size, size);
+    lv_obj_set_style_radius(gauge.container, size / 2, 0);
+
+    int32_t scaleSize = size - (GAUGE_LABEL_PADDING * 2);
+    if (scaleSize < 220) {
+        scaleSize = size - 40;
+    }
+
+    lv_obj_set_size(gauge.scale, scaleSize, scaleSize);
+    lv_obj_center(gauge.scale);
+}
+
 static lv_style_t sectionNormalStyle;
 static lv_style_t sectionCautionStyle;
 static lv_style_t sectionWarningStyle;
@@ -59,7 +102,7 @@ void init_section_styles(void) {
 
 lv_obj_t* create_card_column(lv_obj_t* parent) {
     lv_obj_t* column = lv_obj_create(parent);
-    lv_obj_set_width(column, 150);
+    lv_obj_set_width(column, CARD_COLUMN_WIDTH);
     lv_obj_set_height(column, LV_PCT(100));
     lv_obj_set_style_bg_opa(column, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(column, 0, 0);
@@ -68,6 +111,7 @@ lv_obj_t* create_card_column(lv_obj_t* parent) {
     lv_obj_set_style_pad_column(column, 0, 0);
     lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(column, LV_FLEX_ALIGN_SPACE_AROUND, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scrollbar_mode(column, LV_SCROLLBAR_MODE_OFF);
     lv_obj_clear_flag(column, LV_OBJ_FLAG_SCROLLABLE);
     return column;
 }
@@ -80,7 +124,7 @@ void build_side_cards(lv_obj_t* column,
         HaltechSideCard& card = outCards[i];
 
         card.container = lv_obj_create(column);
-        lv_obj_set_size(card.container, LV_PCT(100), 78);
+        lv_obj_set_size(card.container, LV_PCT(100), CARD_HEIGHT);
         lv_obj_set_style_bg_color(card.container, COLOR_CARD, 0);
         lv_obj_set_style_border_color(card.container, lv_color_hex(0x1D1E20), 0);
         lv_obj_set_style_border_width(card.container, 2, 0);
@@ -88,18 +132,19 @@ void build_side_cards(lv_obj_t* column,
         lv_obj_set_style_shadow_color(card.container, lv_color_hex(0x000000), 0);
         lv_obj_set_style_shadow_opa(card.container, LV_OPA_40, 0);
         lv_obj_set_style_shadow_width(card.container, 10, 0);
-        lv_obj_set_style_pad_all(card.container, 10, 0);
+        lv_obj_set_style_pad_all(card.container, CARD_PADDING, 0);
+        lv_obj_set_scrollbar_mode(card.container, LV_SCROLLBAR_MODE_OFF);
         lv_obj_clear_flag(card.container, LV_OBJ_FLAG_SCROLLABLE);
 
         card.label = lv_label_create(card.container);
         lv_label_set_text(card.label, cfg.title);
-        lv_obj_set_style_text_font(card.label, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(card.label, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(card.label, COLOR_TEXT_DIM, 0);
         lv_obj_align(card.label, LV_ALIGN_TOP_LEFT, 0, 0);
 
         card.valueLabel = lv_label_create(card.container);
         lv_label_set_text(card.valueLabel, "--");
-        lv_obj_set_style_text_font(card.valueLabel, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_font(card.valueLabel, &lv_font_montserrat_24, 0);
         lv_obj_set_style_text_color(card.valueLabel, COLOR_ACCENT, 0);
         lv_obj_align(card.valueLabel, LV_ALIGN_TOP_RIGHT, 0, 0);
 
@@ -107,11 +152,11 @@ void build_side_cards(lv_obj_t* column,
         lv_label_set_text(card.unitLabel, cfg.unit);
         lv_obj_set_style_text_font(card.unitLabel, &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_color(card.unitLabel, COLOR_TEXT_DIM, 0);
-        lv_obj_align(card.unitLabel, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+        lv_obj_align(card.unitLabel, LV_ALIGN_BOTTOM_RIGHT, 0, -20);
 
         card.bar = lv_bar_create(card.container);
         lv_obj_set_width(card.bar, LV_PCT(100));
-        lv_obj_set_height(card.bar, 10);
+        lv_obj_set_height(card.bar, CARD_BAR_HEIGHT);
         lv_bar_set_range(card.bar, cfg.min, cfg.max);
         lv_bar_set_value(card.bar, cfg.min, LV_ANIM_OFF);
         lv_obj_set_style_bg_color(card.bar, lv_color_hex(0x1E1F22), LV_PART_MAIN);
@@ -146,11 +191,15 @@ static void build_center_hub(HaltechGaugeElements& gauge, const HaltechGaugeConf
     lv_obj_set_style_radius(inner, LV_RADIUS_CIRCLE, 0);
     lv_obj_clear_flag(inner, LV_OBJ_FLAG_SCROLLABLE);
 
-    gauge.centerLabel = lv_label_create(inner);
-    lv_label_set_text(gauge.centerLabel, cfg.centerLabel != nullptr ? cfg.centerLabel : "");
-    lv_obj_set_style_text_font(gauge.centerLabel, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(gauge.centerLabel, COLOR_TEXT_DIM, 0);
-    lv_obj_align(gauge.centerLabel, LV_ALIGN_TOP_MID, 0, 4);
+    if (cfg.centerLabel != nullptr && cfg.centerLabel[0] != '\0') {
+        gauge.centerLabel = lv_label_create(inner);
+        lv_label_set_text(gauge.centerLabel, cfg.centerLabel);
+        lv_obj_set_style_text_font(gauge.centerLabel, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(gauge.centerLabel, COLOR_TEXT_DIM, 0);
+        lv_obj_align(gauge.centerLabel, LV_ALIGN_TOP_MID, 0, 4);
+    } else {
+        gauge.centerLabel = nullptr;
+    }
 
     gauge.centerValue = lv_label_create(inner);
     lv_label_set_text(gauge.centerValue, "0");
@@ -170,27 +219,30 @@ void build_gauge(HaltechGaugeElements& out,
                  const HaltechGaugeConfig& cfg,
                  bool alignRight) {
     out.container = lv_obj_create(parent);
-    lv_obj_set_size(out.container, 340, 340);
+    lv_obj_set_size(out.container, GAUGE_CONTAINER_MAX, GAUGE_CONTAINER_MAX);
     lv_obj_set_style_bg_color(out.container, COLOR_PANEL, 0);
     lv_obj_set_style_bg_grad_color(out.container, lv_color_hex(0x08090C), 0);
     lv_obj_set_style_bg_grad_dir(out.container, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_border_color(out.container, lv_color_hex(0x1B1C21), 0);
     lv_obj_set_style_border_width(out.container, 2, 0);
-    lv_obj_set_style_radius(out.container, 170, 0);
+    lv_obj_set_style_radius(out.container, GAUGE_CONTAINER_MAX / 2, 0);
     lv_obj_set_style_pad_all(out.container, 0, 0);
     lv_obj_set_style_shadow_color(out.container, lv_color_hex(0x000000), 0);
     lv_obj_set_style_shadow_width(out.container, 20, 0);
     lv_obj_set_style_shadow_opa(out.container, LV_OPA_30, 0);
+    lv_obj_set_scrollbar_mode(out.container, LV_SCROLLBAR_MODE_OFF);
     lv_obj_clear_flag(out.container, LV_OBJ_FLAG_SCROLLABLE);
     if (alignRight) {
-        lv_obj_set_style_margin_left(out.container, -50, 0);
+        lv_obj_set_style_margin_left(out.container, GAUGE_OVERLAP, 0);
     } else {
-        lv_obj_set_style_margin_right(out.container, -50, 0);
+        lv_obj_set_style_margin_right(out.container, GAUGE_OVERLAP, 0);
     }
 
     out.scale = lv_scale_create(out.container);
     lv_obj_center(out.scale);
-    lv_obj_set_size(out.scale, 300, 300);
+    lv_obj_set_size(out.scale,
+                    GAUGE_CONTAINER_MAX - (GAUGE_LABEL_PADDING * 2),
+                    GAUGE_CONTAINER_MAX - (GAUGE_LABEL_PADDING * 2));
     lv_obj_set_style_bg_opa(out.scale, LV_OPA_TRANSP, 0);
     lv_scale_set_mode(out.scale, LV_SCALE_MODE_ROUND_OUTER);
     lv_scale_set_angle_range(out.scale, 270);
@@ -233,11 +285,15 @@ void build_gauge(HaltechGaugeElements& out,
 
     build_center_hub(out, cfg);
 
-    out.titleLabel = lv_label_create(out.container);
-    lv_label_set_text(out.titleLabel, cfg.title);
-    lv_obj_set_style_text_font(out.titleLabel, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(out.titleLabel, COLOR_TEXT, 0);
-    lv_obj_align(out.titleLabel, LV_ALIGN_TOP_MID, 0, 12);
+    if (cfg.title != nullptr && cfg.title[0] != '\0') {
+        out.titleLabel = lv_label_create(out.container);
+        lv_label_set_text(out.titleLabel, cfg.title);
+        lv_obj_set_style_text_font(out.titleLabel, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(out.titleLabel, COLOR_TEXT, 0);
+        lv_obj_align(out.titleLabel, LV_ALIGN_TOP_MID, 0, 12);
+    } else {
+        out.titleLabel = nullptr;
+    }
 
     out.digitalValue = lv_label_create(out.digitalCard);
     lv_label_set_text(out.digitalValue, "0");
@@ -323,7 +379,10 @@ void update_side_card(HaltechSideCard& card, float value) {
     }
 
     char buffer[16];
-    if (std::fabs(value) < 10.0f) {
+    const float rounded = std::round(value);
+    if (std::fabs(value - rounded) < 0.05f) {
+        std::snprintf(buffer, sizeof(buffer), "%.0f", value);
+    } else if (std::fabs(value) < 10.0f) {
         std::snprintf(buffer, sizeof(buffer), "%.1f", value);
     } else {
         std::snprintf(buffer, sizeof(buffer), "%.0f", value);
@@ -347,20 +406,19 @@ bool haltech_cluster_init(HaltechClusterWidget& widget,
     }
 
     lv_obj_set_size(widget.root, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_bg_color(widget.root, COLOR_FRAME, 0);
-    lv_obj_set_style_border_color(widget.root, lv_color_hex(0x1D1E22), 0);
-    lv_obj_set_style_border_width(widget.root, 2, 0);
-    lv_obj_set_style_radius(widget.root, 26, 0);
-    lv_obj_set_style_pad_all(widget.root, 18, 0);
-    lv_obj_set_style_shadow_color(widget.root, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_shadow_width(widget.root, 18, 0);
-    lv_obj_set_style_shadow_opa(widget.root, LV_OPA_30, 0);
+    lv_obj_set_style_bg_opa(widget.root, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(widget.root, 0, 0);
+    lv_obj_set_style_radius(widget.root, 0, 0);
+    lv_obj_set_style_pad_all(widget.root, 0, 0);
+    lv_obj_set_style_shadow_width(widget.root, 0, 0);
+    lv_obj_set_style_shadow_opa(widget.root, LV_OPA_0, 0);
     lv_obj_set_flex_flow(widget.root, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(widget.root, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scrollbar_mode(widget.root, LV_SCROLLBAR_MODE_OFF);
     lv_obj_clear_flag(widget.root, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t* leftColumn = create_card_column(widget.root);
-    build_side_cards(leftColumn, config.leftCards, widget.leftCards);
+    // lv_obj_t* leftColumn = create_card_column(widget.root);
+    // build_side_cards(leftColumn, config.leftCards, widget.leftCards);
 
     lv_obj_t* centerArea = lv_obj_create(widget.root);
     lv_obj_set_flex_grow(centerArea, 1);
@@ -379,8 +437,15 @@ bool haltech_cluster_init(HaltechClusterWidget& widget,
         widget.rightGauge.container = nullptr;
     }
 
-    lv_obj_t* rightColumn = create_card_column(widget.root);
-    build_side_cards(rightColumn, config.rightCards, widget.rightCards);
+    // lv_obj_t* rightColumn = create_card_column(widget.root);
+    // build_side_cards(rightColumn, config.rightCards, widget.rightCards);
+
+    lv_obj_update_layout(widget.root);
+    size_gauge_to_parent(widget.leftGauge, centerArea, config.enableRightGauge);
+    if (config.enableRightGauge) {
+        size_gauge_to_parent(widget.rightGauge, centerArea, true);
+    }
+    lv_obj_update_layout(widget.root);
 
     return true;
 }
@@ -425,7 +490,10 @@ void haltech_cluster_set_center_value(HaltechClusterWidget& widget, bool leftGau
     }
 
     char buffer[16];
-    if (std::fabs(value) < 10.0f) {
+    const float rounded = std::round(value);
+    if (std::fabs(value - rounded) < 0.05f) {
+        std::snprintf(buffer, sizeof(buffer), "%.0f", value);
+    } else if (std::fabs(value) < 10.0f) {
         std::snprintf(buffer, sizeof(buffer), "%.1f", value);
     } else {
         std::snprintf(buffer, sizeof(buffer), "%.0f", value);

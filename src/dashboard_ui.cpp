@@ -9,6 +9,7 @@
 #include "dashboard_ui.h"
 #include "config.h"
 #include "haltech_widget.h"
+#include <cmath>
 #include <cstdio>
 
 #if defined(ARDUINO)
@@ -17,15 +18,17 @@
 
 // Screen objects
 static lv_obj_t* mainScreen = nullptr;
-static lv_obj_t* detailedScreen = nullptr;
 static lv_obj_t* settingsScreen = nullptr;
 static lv_obj_t* diagnosticsScreen = nullptr;
+static lv_timer_t* gestureTimer = nullptr;
 
 // Main screen widgets
 static HaltechClusterWidget haltechCluster;
 static bool haltechClusterReady = false;
 static lv_obj_t* checkEngineIcon = nullptr;
 static lv_obj_t* connectionIcon = nullptr;
+static lv_obj_t* dtcLabel = nullptr;
+static bool (*clearDtcCallback)(void) = nullptr;
 
 // Current screen tracking
 static DashboardScreen currentScreen = DashboardScreen::MAIN;
@@ -44,6 +47,96 @@ static const lv_color_t COLOR_DANGER = lv_color_hex(0xFF4D4F);
 static const lv_color_t COLOR_TEXT = lv_color_hex(0xF6F6F6);
 static const lv_color_t COLOR_TEXT_DIM = lv_color_hex(0x7A7B85);
 
+static constexpr int32_t SWIPE_THRESHOLD = 80;
+static constexpr uint32_t SWIPE_DEBOUNCE_MS = 250;
+
+namespace DashboardUI {
+    void switchScreen(DashboardScreen screen);
+}
+
+static lv_indev_t* getPointerIndev(void) {
+    lv_indev_t* indev = lv_indev_get_next(nullptr);
+    while (indev != nullptr) {
+        if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
+            return indev;
+        }
+        indev = lv_indev_get_next(indev);
+    }
+    return nullptr;
+}
+
+static void switchScreenNext(bool forward) {
+    DashboardScreen nextScreen = currentScreen;
+    if (forward) {
+        switch (currentScreen) {
+            case DashboardScreen::MAIN:
+                nextScreen = DashboardScreen::DIAGNOSTICS;
+                break;
+            case DashboardScreen::DIAGNOSTICS:
+                nextScreen = DashboardScreen::SETTINGS;
+                break;
+            case DashboardScreen::SETTINGS:
+                nextScreen = DashboardScreen::MAIN;
+                break;
+        }
+    } else {
+        switch (currentScreen) {
+            case DashboardScreen::MAIN:
+                nextScreen = DashboardScreen::SETTINGS;
+                break;
+            case DashboardScreen::DIAGNOSTICS:
+                nextScreen = DashboardScreen::MAIN;
+                break;
+            case DashboardScreen::SETTINGS:
+                nextScreen = DashboardScreen::DIAGNOSTICS;
+                break;
+        }
+    }
+
+    if (nextScreen != currentScreen) {
+        DashboardUI::switchScreen(nextScreen);
+    }
+}
+
+static void gestureTimerCb(lv_timer_t* timer) {
+    (void)timer;
+    static bool tracking = false;
+    static lv_point_t startPoint = { 0, 0 };
+    static uint32_t lastGestureMs = 0;
+
+    lv_indev_t* indev = getPointerIndev();
+    if (indev == nullptr) {
+        return;
+    }
+
+    lv_point_t point;
+    lv_indev_get_point(indev, &point);
+    lv_indev_state_t state = lv_indev_get_state(indev);
+    const uint32_t now = lv_tick_get();
+
+    if (state == LV_INDEV_STATE_PRESSED) {
+        if (!tracking) {
+            tracking = true;
+            startPoint = point;
+        }
+        return;
+    }
+
+    if (state == LV_INDEV_STATE_RELEASED && tracking) {
+        tracking = false;
+        if (now - lastGestureMs < SWIPE_DEBOUNCE_MS) {
+            return;
+        }
+
+        const int32_t dx = point.x - startPoint.x;
+        const int32_t dy = point.y - startPoint.y;
+        if (std::abs(dx) >= SWIPE_THRESHOLD && std::abs(dx) > std::abs(dy)) {
+            switchScreenNext(dx < 0);
+            lastGestureMs = now;
+        }
+    }
+}
+
 static constexpr uint8_t CARD_LEFT_MAP = 0;
 static constexpr uint8_t CARD_LEFT_COOLANT = 1;
 static constexpr uint8_t CARD_LEFT_INTAKE = 2;
@@ -55,11 +148,11 @@ static constexpr uint8_t CARD_RIGHT_BATTERY = 2;
 static constexpr uint8_t CARD_RIGHT_INJECTOR = 3;
 
 static const HaltechClusterConfig HALTECH_CLUSTER_CONFIG = {
-    false,
+    true,
     {
-        "TACHO",
-        "RPM",
-        "Haltech",
+        "",
+        "km/h",
+        "",
         "km/h",
         0,
         SPEED_MAX,
@@ -72,19 +165,19 @@ static const HaltechClusterConfig HALTECH_CLUSTER_CONFIG = {
         true,
     },
     {
-        "SPEED",
-        "km/h",
-        "uC10",
-        "km/h",
+        "",
+        "RPM",
+        "",
+        "RPM",
         0,
-        SPEED_MAX,
-        SPEED_WARNING,
-        SPEED_MAX - 10,
-        33,
-        3,
+        RPM_MAX,
+        RPM_WARNING,
+        RPM_REDLINE,
+        (RPM_MAX / 500) + 1,
+        2,
         -40,
-        true,
         false,
+        true,
     },
     {{
         { "MAP", "kPa", 0, 120, false },
@@ -100,6 +193,114 @@ static const HaltechClusterConfig HALTECH_CLUSTER_CONFIG = {
     }},
 };
 
+struct DtcInfo {
+    uint8_t code;
+    const char* description;
+};
+
+static const DtcInfo DTC_TABLE[] = {
+    { 0, "ECU - Faulty ECU or ECU ROM" },
+    { 1, "O2A - Oxygen sensor #1" },
+    { 2, "O2B - Oxygen sensor #2" },
+    { 3, "MAP - Manifold absolute pressure sensor" },
+    { 4, "CKP - Crank position sensor" },
+    { 5, "MAP - Manifold absolute pressure sensor" },
+    { 6, "ECT - Water temperature sensor" },
+    { 7, "TPS - Throttle position sensor" },
+    { 8, "TDC - Top dead center sensor" },
+    { 9, "CYP - Cylinder sensor" },
+    { 10, "IAT - Intake air temperature sensor" },
+    { 11, "Engine overheating" },
+    { 12, "EGR - Exhaust gas recirculation lift valve" },
+    { 13, "BARO - Atmospheric pressure sensor" },
+    { 14, "IAC (EACV) - Idle air control valve" },
+    { 15, "Ignition output signal" },
+    { 16, "Fuel injectors" },
+    { 17, "VSS - Vehicle speed sensor" },
+    { 19, "Automatic transmission lockup control valve" },
+    { 20, "ELD - Electrical load detector" },
+    { 21, "VTEC spool solenoid valve" },
+    { 22, "VTEC pressure valve" },
+    { 23, "Knock sensor" },
+    { 30, "Automatic transmission A signal" },
+    { 31, "Automatic transmission B signal" },
+    { 36, "Traction control (some JDM ECUs)" },
+    { 38, "Secondary VTEC solenoid (JDM 3 stage D15B VTEC)" },
+    { 41, "Primary oxygen sensor heater" },
+    { 43, "Fuel supply system" },
+    { 45, "Fuel system too rich or lean" },
+    { 48, "LAF - Lean air fuel sensor" },
+    { 54, "CKF - Crank fluctuation sensor" },
+    { 58, "TDC sensor #2" },
+    { 61, "Primary oxygen sensor" },
+    { 63, "Secondary oxygen sensor circuit" },
+    { 65, "Secondary oxygen sensor heater wire" },
+    { 67, "Catalytic converter" },
+    { 71, "Random misfire cylinder 1" },
+    { 72, "Random misfire cylinder 2" },
+    { 73, "Random misfire cylinder 3" },
+    { 74, "Random misfire cylinder 4" },
+    { 80, "EGR valve/line" },
+    { 86, "ECT sensor - Cooling system" },
+    { 91, "Fuel tank pressure sensor" },
+    { 92, "EVAP solenoid/valve/vacuum lines" },
+};
+
+static const char* lookupDtcDescription(uint8_t code) {
+    for (const auto& entry : DTC_TABLE) {
+        if (entry.code == code) {
+            return entry.description;
+        }
+    }
+    return "Unknown code";
+}
+
+static void updateDiagnosticsLabel(const OBD1Data& data) {
+    if (dtcLabel == nullptr) {
+        return;
+    }
+
+    char buffer[768];
+    size_t offset = 0;
+    int written = 0;
+
+    if (!data.connected) {
+        written = std::snprintf(buffer, sizeof(buffer), "ECU not connected.");
+    } else if (data.dtcCount == 0) {
+        written = std::snprintf(buffer, sizeof(buffer), "No DTCs stored.");
+    } else {
+        written = std::snprintf(buffer, sizeof(buffer), "DTCs (%u):\n", data.dtcCount);
+        if (written < 0) {
+            return;
+        }
+        offset = static_cast<size_t>(written);
+        if (offset >= sizeof(buffer)) {
+            offset = sizeof(buffer) - 1;
+        }
+        for (uint8_t i = 0; i < data.dtcCount; ++i) {
+            const size_t remaining = sizeof(buffer) - offset;
+            if (remaining <= 1) {
+                break;
+            }
+            written = std::snprintf(buffer + offset,
+                                    remaining,
+                                    "%u - %s\n",
+                                    data.dtcCodes[i],
+                                    lookupDtcDescription(data.dtcCodes[i]));
+            if (written < 0) {
+                break;
+            }
+            offset += static_cast<size_t>(written);
+            if (offset >= sizeof(buffer)) {
+                offset = sizeof(buffer) - 1;
+                break;
+            }
+        }
+    }
+
+    lv_label_set_text(dtcLabel, buffer);
+}
+
 /**
  * @brief Create the main dashboard screen
  */
@@ -113,23 +314,19 @@ static void createMainScreen(void) {
     lv_obj_set_size(rootContainer, DISPLAY_WIDTH, DISPLAY_HEIGHT);
     lv_obj_set_style_bg_color(rootContainer, COLOR_BG, 0);
     lv_obj_set_style_border_width(rootContainer, 0, 0);
-    lv_obj_set_style_pad_all(rootContainer, 20, 0);
+    lv_obj_set_style_pad_all(rootContainer, 0, 0);
     lv_obj_set_flex_flow(rootContainer, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(rootContainer, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(rootContainer, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(rootContainer, LV_OBJ_FLAG_SCROLLABLE);
     // Frame container
     lv_obj_t* frame = lv_obj_create(rootContainer);
-    lv_obj_set_size(frame, DISPLAY_WIDTH - 40, DISPLAY_HEIGHT - 130);
-    lv_obj_set_style_bg_color(frame, COLOR_PRIMARY, 0);
-    lv_obj_set_style_bg_grad_color(frame, COLOR_ACCENT, 0);
-    lv_obj_set_style_bg_grad_dir(frame, LV_GRAD_DIR_VER, 0);
-    lv_obj_set_style_border_color(frame, lv_color_hex(0x2B2C34), 0);
-    lv_obj_set_style_border_width(frame, 2, 0);
-    lv_obj_set_style_radius(frame, 30, 0);
-    lv_obj_set_style_shadow_color(frame, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_shadow_width(frame, 18, 0);
-    lv_obj_set_style_shadow_opa(frame, LV_OPA_30, 0);
-    lv_obj_set_style_pad_all(frame, 18, 0);
+    lv_obj_set_size(frame, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_opa(frame, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(frame, 0, 0);
+    lv_obj_set_style_radius(frame, 0, 0);
+    lv_obj_set_style_shadow_width(frame, 0, 0);
+    lv_obj_set_style_shadow_opa(frame, LV_OPA_0, 0);
+    lv_obj_set_style_pad_all(frame, 0, 0);
     lv_obj_set_flex_flow(frame, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(frame, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(frame, LV_OBJ_FLAG_SCROLLABLE);
@@ -146,7 +343,8 @@ static void createMainScreen(void) {
     
     
     lv_obj_t* clusterArea = lv_obj_create(frame);
-    lv_obj_set_size(clusterArea, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_width(clusterArea, LV_PCT(100));
+    lv_obj_set_flex_grow(clusterArea, 1);
     lv_obj_set_style_bg_opa(clusterArea, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(clusterArea, 0, 0);
     lv_obj_set_style_pad_all(clusterArea, 0, 0);
@@ -177,42 +375,6 @@ static void createMainScreen(void) {
     // lv_label_set_text(connectionIcon, LV_SYMBOL_WIFI " ECU LINK");
     // lv_obj_set_style_text_font(connectionIcon, &lv_font_montserrat_16, 0);
     // lv_obj_set_style_text_color(connectionIcon, COLOR_DANGER, 0);
-}
-
-/**
- * @brief Create the detailed data screen
- */
-static void createDetailedScreen(void) {
-    detailedScreen = lv_obj_create(nullptr);
-    lv_obj_set_style_bg_color(detailedScreen, COLOR_BG, 0);
-    
-    // Title
-    lv_obj_t* title = lv_label_create(detailedScreen);
-    lv_label_set_text(title, "Detailed Data View");
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(title, COLOR_TEXT, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
-    
-    // Back button
-    lv_obj_t* backBtn = lv_btn_create(detailedScreen);
-    lv_obj_set_size(backBtn, 100, 40);
-    lv_obj_align(backBtn, LV_ALIGN_TOP_LEFT, 20, 15);
-    lv_obj_set_style_bg_color(backBtn, COLOR_ACCENT, 0);
-    
-    lv_obj_t* backLabel = lv_label_create(backBtn);
-    lv_label_set_text(backLabel, LV_SYMBOL_LEFT " Back");
-    lv_obj_center(backLabel);
-    
-    lv_obj_add_event_cb(backBtn, [](lv_event_t* e) {
-        DashboardUI::switchScreen(DashboardScreen::MAIN);
-    }, LV_EVENT_CLICKED, nullptr);
-    
-    // Data table placeholder
-    lv_obj_t* infoLabel = lv_label_create(detailedScreen);
-    lv_label_set_text(infoLabel, "Detailed sensor data will be displayed here.\nImplement additional data views as needed.");
-    lv_obj_set_style_text_font(infoLabel, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(infoLabel, COLOR_TEXT_DIM, 0);
-    lv_obj_align(infoLabel, LV_ALIGN_CENTER, 0, 0);
 }
 
 /**
@@ -278,13 +440,31 @@ static void createDiagnosticsScreen(void) {
     lv_obj_add_event_cb(backBtn, [](lv_event_t* e) {
         DashboardUI::switchScreen(DashboardScreen::MAIN);
     }, LV_EVENT_CLICKED, nullptr);
+
+    // Clear DTCs button
+    lv_obj_t* clearBtn = lv_btn_create(diagnosticsScreen);
+    lv_obj_set_size(clearBtn, 140, 40);
+    lv_obj_align(clearBtn, LV_ALIGN_TOP_RIGHT, -20, 15);
+    lv_obj_set_style_bg_color(clearBtn, COLOR_WARNING, 0);
+
+    lv_obj_t* clearLabel = lv_label_create(clearBtn);
+    lv_label_set_text(clearLabel, LV_SYMBOL_TRASH " Clear");
+    lv_obj_center(clearLabel);
+
+    lv_obj_add_event_cb(clearBtn, [](lv_event_t* e) {
+        if (clearDtcCallback != nullptr) {
+            clearDtcCallback();
+        }
+    }, LV_EVENT_CLICKED, nullptr);
     
-    // Diagnostics placeholder
-    lv_obj_t* infoLabel = lv_label_create(diagnosticsScreen);
-    lv_label_set_text(infoLabel, "Diagnostic Trouble Codes (DTCs)\nwill be displayed here.\n\nRead and clear codes functionality.");
-    lv_obj_set_style_text_font(infoLabel, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(infoLabel, COLOR_TEXT_DIM, 0);
-    lv_obj_align(infoLabel, LV_ALIGN_CENTER, 0, 0);
+    // DTC list
+    dtcLabel = lv_label_create(diagnosticsScreen);
+    lv_label_set_text(dtcLabel, "No DTCs stored.");
+    lv_obj_set_style_text_font(dtcLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(dtcLabel, COLOR_TEXT_DIM, 0);
+    lv_label_set_long_mode(dtcLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(dtcLabel, DISPLAY_WIDTH - 80);
+    lv_obj_align(dtcLabel, LV_ALIGN_TOP_LEFT, 40, 80);
 }
 
 namespace DashboardUI {
@@ -294,9 +474,12 @@ void init(void) {
     
     // Create all screens
     createMainScreen();
-    createDetailedScreen();
     createSettingsScreen();
     createDiagnosticsScreen();
+
+    if (gestureTimer == nullptr) {
+        gestureTimer = lv_timer_create(gestureTimerCb, 20, nullptr);
+    }
     
     // Load main screen
     lv_scr_load(mainScreen);
@@ -306,25 +489,29 @@ void init(void) {
 }
 
 void update(const OBD1Data& data) {
-    if (currentScreen != DashboardScreen::MAIN) {
-        return;
-    }
+    if (currentScreen == DashboardScreen::MAIN) {
+        setRPM(data.rpm);
+        setSpeed(data.speed);
+        setCoolantTemp(data.coolantTemp);
+        setThrottlePosition(data.throttlePosition);
+        setBatteryVoltage(data.batteryVoltage / 10.0f);
+        showCheckEngine(data.checkEngine);
+        setConnectionStatus(data.connected);
 
-    setRPM(data.rpm);
-    setSpeed(data.speed);
-    setCoolantTemp(data.coolantTemp);
-    setThrottlePosition(data.throttlePosition);
-    setBatteryVoltage(data.batteryVoltage / 10.0f);
-    showCheckEngine(data.checkEngine);
-    setConnectionStatus(data.connected);
-
-    if (haltechClusterReady) {
-        haltech_cluster_set_card_value(haltechCluster, true, CARD_LEFT_MAP, data.mapPressure);
-        haltech_cluster_set_card_value(haltechCluster, true, CARD_LEFT_INTAKE, data.intakeTemp);
-        haltech_cluster_set_card_value(haltechCluster, false, CARD_RIGHT_IGN, data.ignitionAdvance);
-        const float injectorMs = static_cast<float>(data.injectorPulse) / 10.0f;
-        haltech_cluster_set_card_value(haltechCluster, false, CARD_RIGHT_INJECTOR, injectorMs);
+        if (haltechClusterReady) {
+            haltech_cluster_set_card_value(haltechCluster, true, CARD_LEFT_MAP, data.mapPressure);
+            haltech_cluster_set_card_value(haltechCluster, true, CARD_LEFT_INTAKE, data.intakeTemp);
+            haltech_cluster_set_card_value(haltechCluster, false, CARD_RIGHT_IGN, data.ignitionAdvance);
+            const float injectorMs = static_cast<float>(data.injectorPulse) / 10.0f;
+            haltech_cluster_set_card_value(haltechCluster, false, CARD_RIGHT_INJECTOR, injectorMs);
+        }
+    } else if (currentScreen == DashboardScreen::DIAGNOSTICS) {
+        updateDiagnosticsLabel(data);
     }
+}
+
+void setClearDtcCallback(bool (*callback)(void)) {
+    clearDtcCallback = callback;
 }
 
 void switchScreen(DashboardScreen screen) {
@@ -333,9 +520,6 @@ void switchScreen(DashboardScreen screen) {
     switch (screen) {
         case DashboardScreen::MAIN:
             targetScreen = mainScreen;
-            break;
-        case DashboardScreen::DETAILED:
-            targetScreen = detailedScreen;
             break;
         case DashboardScreen::SETTINGS:
             targetScreen = settingsScreen;
@@ -363,7 +547,9 @@ void setRPM(uint16_t rpm) {
     if (clamped > RPM_MAX) {
         clamped = RPM_MAX;
     }
-    haltech_cluster_set_digital_value(haltechCluster, true, clamped, RPM_WARNING, RPM_REDLINE);
+    haltech_cluster_set_right_value(haltechCluster, clamped);
+    haltech_cluster_set_center_value(haltechCluster, false, clamped);
+    haltech_cluster_set_digital_value(haltechCluster, false, clamped, RPM_WARNING, RPM_REDLINE);
 }
 
 void setSpeed(uint8_t speed) {

@@ -6,14 +6,17 @@
  * This module handles reading data from the ECU diagnostic port.
  * 
  * Honda OBD1 Protocol:
- * - Uses serial communication at 9600 baud
- * - Data is requested by sending specific addresses
- * - ECU responds with single-byte values
+ * - Uses serial communication at 38400 baud (TTL)
+ * - Enter datalogging by sending 16 and receiving 205
+ * - Request a 52-byte packet by sending 32
+ * - Send 80 to clear stored DTCs
  */
 
 #include "obd1_handler.h"
+#include "obd1_decoder.h"
 #include "config.h"
 #include <Arduino.h>
+#include <cstring>
 
 // OBD1 Data storage
 static OBD1Data obd1Data;
@@ -24,135 +27,72 @@ static void (*dataCallback)(const OBD1Data& data) = nullptr;
 // Serial port for OBD1 communication
 static HardwareSerial OBD1Serial(1);  // Use UART1
 
-/**
- * @brief Honda OBD1 ECU addresses
- * 
- * These addresses are specific to Honda OBD1 ECUs.
- * Different Honda models may have slightly different addresses.
- */
-namespace HondaOBD1Addresses {
-    constexpr uint8_t RPM_HIGH      = 0x00;
-    constexpr uint8_t RPM_LOW       = 0x01;
-    constexpr uint8_t SPEED         = 0x02;
-    constexpr uint8_t COOLANT_TEMP  = 0x03;
-    constexpr uint8_t INTAKE_TEMP   = 0x04;
-    constexpr uint8_t MAP           = 0x05;
-    constexpr uint8_t TPS           = 0x06;
-    constexpr uint8_t O2_SENSOR     = 0x07;
-    constexpr uint8_t FUEL_TRIM     = 0x08;
-    constexpr uint8_t IGN_ADVANCE   = 0x09;
-    constexpr uint8_t INJECTOR      = 0x0A;
-    constexpr uint8_t BATTERY       = 0x0B;
-    constexpr uint8_t ECU_STATUS    = 0x0C;
+namespace HondaOBD1Protocol {
+    constexpr uint8_t CMD_START_LOGGING = 16;
+    constexpr uint8_t CMD_REQUEST_PACKET = 32;
+    constexpr uint8_t CMD_CLEAR_DTCS = 80;
+    constexpr uint8_t RESP_LOGGING_READY = 205;
+    constexpr uint32_t RESPONSE_TIMEOUT_MS = 60;
 }
 
-/**
- * @brief Send a request to the ECU and read response
- * @param address ECU address to query
- * @return Response byte from ECU, or 0xFF on error
- */
-static uint8_t queryECU(uint8_t address) {
-    // Clear any pending data
+static uint8_t lastPacket[OBD1_PACKET_LENGTH];
+static bool packetValid = false;
+static bool dataloggingEnabled = false;
+
+static void flushSerial(void) {
     while (OBD1Serial.available()) {
         OBD1Serial.read();
     }
-    
-    // Send request
-    OBD1Serial.write(address);
-    
-    // Wait for response with timeout
-    unsigned long startTime = millis();
+}
+
+static bool readByteWithTimeout(uint8_t& value, uint32_t timeoutMs) {
+    const unsigned long startTime = millis();
     while (!OBD1Serial.available()) {
-        if (millis() - startTime > 100) {  // 100ms timeout
-            return 0xFF;  // Timeout
+        if (millis() - startTime > timeoutMs) {
+            return false;
         }
         vTaskDelay(1);
     }
-    
-    return OBD1Serial.read();
+    value = static_cast<uint8_t>(OBD1Serial.read());
+    return true;
 }
 
-/**
- * @brief Read all OBD1 parameters
- * Updates the global obd1Data structure
- */
-static void readAllParameters(void) {
-    // Read RPM (16-bit value)
-    uint8_t rpmHigh = queryECU(HondaOBD1Addresses::RPM_HIGH);
-    uint8_t rpmLow = queryECU(HondaOBD1Addresses::RPM_LOW);
-    if (rpmHigh != 0xFF && rpmLow != 0xFF) {
-        obd1Data.rpm = (rpmHigh << 8) | rpmLow;
+static bool readBuffer(uint8_t* buffer, size_t length, uint32_t timeoutMs) {
+    size_t index = 0;
+    unsigned long lastByteTime = millis();
+    while (index < length) {
+        if (OBD1Serial.available()) {
+            buffer[index++] = static_cast<uint8_t>(OBD1Serial.read());
+            lastByteTime = millis();
+            continue;
+        }
+        if (millis() - lastByteTime > timeoutMs) {
+            return false;
+        }
+        vTaskDelay(1);
     }
-    
-    // Read speed
-    uint8_t speed = queryECU(HondaOBD1Addresses::SPEED);
-    if (speed != 0xFF) {
-        obd1Data.speed = speed;
+    return true;
+}
+
+static bool enterDataloggingMode(void) {
+    flushSerial();
+    if (OBD1Serial.write(HondaOBD1Protocol::CMD_START_LOGGING) != 1) {
+        return false;
     }
-    
-    // Read coolant temperature
-    uint8_t coolant = queryECU(HondaOBD1Addresses::COOLANT_TEMP);
-    if (coolant != 0xFF) {
-        // Convert raw value to Celsius (approximation)
-        obd1Data.coolantTemp = coolant - 40;
+    uint8_t response = 0;
+    if (!readByteWithTimeout(response, HondaOBD1Protocol::RESPONSE_TIMEOUT_MS)) {
+        return false;
     }
-    
-    // Read intake temperature
-    uint8_t intake = queryECU(HondaOBD1Addresses::INTAKE_TEMP);
-    if (intake != 0xFF) {
-        obd1Data.intakeTemp = intake - 40;
+    return response == HondaOBD1Protocol::RESP_LOGGING_READY;
+}
+
+static bool requestPacket(uint8_t* packet) {
+    flushSerial();
+    if (OBD1Serial.write(HondaOBD1Protocol::CMD_REQUEST_PACKET) != 1) {
+        return false;
     }
-    
-    // Read MAP pressure
-    uint8_t map = queryECU(HondaOBD1Addresses::MAP);
-    if (map != 0xFF) {
-        obd1Data.mapPressure = map;  // Raw value in kPa
-    }
-    
-    // Read throttle position
-    uint8_t tps = queryECU(HondaOBD1Addresses::TPS);
-    if (tps != 0xFF) {
-        obd1Data.throttlePosition = (tps * 100) / 255;  // Convert to percentage
-    }
-    
-    // Read O2 sensor voltage
-    uint8_t o2 = queryECU(HondaOBD1Addresses::O2_SENSOR);
-    if (o2 != 0xFF) {
-        obd1Data.o2Voltage = o2 * 5.0f / 255.0f;  // Convert to voltage (0-5V)
-    }
-    
-    // Read fuel trim
-    uint8_t fuelTrim = queryECU(HondaOBD1Addresses::FUEL_TRIM);
-    if (fuelTrim != 0xFF) {
-        obd1Data.fuelTrim = fuelTrim;
-    }
-    
-    // Read ignition advance
-    uint8_t ignAdv = queryECU(HondaOBD1Addresses::IGN_ADVANCE);
-    if (ignAdv != 0xFF) {
-        obd1Data.ignitionAdvance = ignAdv;
-    }
-    
-    // Read injector pulse width
-    uint8_t injector = queryECU(HondaOBD1Addresses::INJECTOR);
-    if (injector != 0xFF) {
-        obd1Data.injectorPulse = injector;
-    }
-    
-    // Read battery voltage
-    uint8_t battery = queryECU(HondaOBD1Addresses::BATTERY);
-    if (battery != 0xFF) {
-        obd1Data.batteryVoltage = battery;  // Value * 10 (e.g., 140 = 14.0V)
-    }
-    
-    // Read ECU status (check engine light, etc.)
-    uint8_t status = queryECU(HondaOBD1Addresses::ECU_STATUS);
-    if (status != 0xFF) {
-        obd1Data.checkEngine = (status & 0x80) != 0;
-    }
-    
-    // Update timestamp
-    obd1Data.timestamp = millis();
+    return readBuffer(packet, OBD1_PACKET_LENGTH,
+                      HondaOBD1Protocol::RESPONSE_TIMEOUT_MS);
 }
 
 /**
@@ -162,16 +102,25 @@ static void obd1PollingTask(void* parameter) {
     TickType_t lastWakeTime = xTaskGetTickCount();
     
     while (polling) {
-        // Try to communicate with ECU
-        uint8_t testResponse = queryECU(0x00);
-        obd1Data.connected = (testResponse != 0xFF);
-        
-        if (obd1Data.connected) {
-            readAllParameters();
-            
-            // Call callback if registered
-            if (dataCallback != nullptr) {
-                dataCallback(obd1Data);
+        if (!dataloggingEnabled) {
+            dataloggingEnabled = enterDataloggingMode();
+            packetValid = false;
+            obd1Data.connected = dataloggingEnabled;
+        } else {
+            if (requestPacket(lastPacket)) {
+                packetValid = decodeObd1Packet(lastPacket, OBD1_PACKET_LENGTH, obd1Data, millis());
+                if (packetValid) {
+                    obd1Data.connected = true;
+                    if (dataCallback != nullptr) {
+                        dataCallback(obd1Data);
+                    }
+                } else {
+                    obd1Data.connected = true;
+                }
+            } else {
+                obd1Data.connected = false;
+                dataloggingEnabled = false;
+                packetValid = false;
             }
         }
         
@@ -195,6 +144,8 @@ bool init(void) {
     // Initialize data structure
     memset(&obd1Data, 0, sizeof(obd1Data));
     obd1Data.connected = false;
+    dataloggingEnabled = false;
+    packetValid = false;
     
     DEBUG_PRINTLN("OBD1 handler initialized");
     return true;
@@ -220,6 +171,8 @@ void startPolling(void) {
 
 void stopPolling(void) {
     polling = false;
+    dataloggingEnabled = false;
+    packetValid = false;
     DEBUG_PRINTLN("OBD1 polling stopped");
 }
 
@@ -259,8 +212,22 @@ void setDataCallback(void (*callback)(const OBD1Data& data)) {
     dataCallback = callback;
 }
 
-uint8_t readParameter(uint8_t address) {
-    return queryECU(address);
+uint8_t readParameter(uint8_t index) {
+    if (!packetValid || index >= OBD1_PACKET_LENGTH) {
+        return 0xFF;
+    }
+    return lastPacket[index];
+}
+
+bool clearDTCs(void) {
+    if (!dataloggingEnabled) {
+        dataloggingEnabled = enterDataloggingMode();
+        if (!dataloggingEnabled) {
+            return false;
+        }
+    }
+    flushSerial();
+    return OBD1Serial.write(HondaOBD1Protocol::CMD_CLEAR_DTCS) == 1;
 }
 
 } // namespace OBD1Handler
