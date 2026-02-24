@@ -128,6 +128,34 @@
 #define OBD1_REQUEST_INTERVAL 30
 
 /*====================
+   BLUETOOTH CONFIGURATION
+   ====================
+   
+   BLE UART bridge for wireless debug/telemetry.
+   ESP32-S3 supports BLE (not classic SPP).
+   ====================*/
+
+// Enable/disable BLE UART bridge
+#ifndef BLE_UART_ENABLED
+  #define BLE_UART_ENABLED 1
+#endif
+
+// BLE device name shown during advertising
+#ifndef BLE_DEVICE_NAME
+  #define BLE_DEVICE_NAME "HondaOBD1Dash"
+#endif
+
+// RX queue depth for incoming BLE bytes
+#ifndef BLE_RX_QUEUE_LENGTH
+  #define BLE_RX_QUEUE_LENGTH 128
+#endif
+
+// Minimum interval (ms) between telemetry notifications
+#ifndef BLE_OBD_PUSH_INTERVAL_MS
+  #define BLE_OBD_PUSH_INTERVAL_MS 200
+#endif
+
+/*====================
    LED/STATUS INDICATORS
    ====================*/
 

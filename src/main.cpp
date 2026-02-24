@@ -21,6 +21,7 @@
 #include "display_driver.h"
 #include "dashboard_ui.h"
 #include "obd1_handler.h"
+#include "bluetooth_uart.h"
 
 // Task handles
 static TaskHandle_t lvglTaskHandle = nullptr;
@@ -73,6 +74,7 @@ void lvglTask(void* parameter) {
 void onOBD1DataReceived(const OBD1Data& data) {
     // Update the dashboard UI with new data
     DashboardUI::update(data);
+    BluetoothUART::sendObdSnapshot(data);
 }
 
 /**
@@ -83,6 +85,11 @@ bool initializeSystem(void) {
     // Initialize serial for debug output
     Serial.begin(DEBUG_BAUD_RATE);
     delay(1000);  // Wait for serial to initialize
+
+    // Initialize BLE UART bridge (non-fatal if unavailable)
+    if (!BluetoothUART::init()) {
+        DEBUG_PRINTLN("WARNING: BLE UART init failed, continuing without it");
+    }
     
     DEBUG_PRINTLN("\n================================");
     DEBUG_PRINTLN("ESP32-S3 Honda OBD1 Dashboard");
@@ -176,15 +183,14 @@ void setup() {
 void loop() {
     // The main work is done in FreeRTOS tasks
     // This loop handles any non-time-critical operations
+    BluetoothUART::loop();
     
     // Check for serial commands (for debugging)
     const unsigned long now = millis();
     const float dt = (lastSimTickMs == 0) ? 0.0f : (now - lastSimTickMs) / 1000.0f;
     lastSimTickMs = now;
 
-    while (Serial.available()) {
-        char cmd = Serial.read();
-        
+    auto handleCommand = [&](char cmd) {
         switch (cmd) {
             case '1':
                 DashboardUI::switchScreen(DashboardScreen::MAIN);
@@ -224,6 +230,7 @@ void loop() {
                 DEBUG_PRINTF("Free Heap: %d bytes\n", ESP.getFreeHeap());
                 DEBUG_PRINTF("Free PSRAM: %d bytes\n", ESP.getFreePsram());
                 DEBUG_PRINTF("OBD1 Connected: %s\n", OBD1Handler::isConnected() ? "Yes" : "No");
+                DEBUG_PRINTF("BLE Connected: %s\n", BluetoothUART::isConnected() ? "Yes" : "No");
                 break;
             case 'h':
             case '?':
@@ -236,6 +243,17 @@ void loop() {
                 DEBUG_PRINTLN("h/?: This help");
                 DEBUG_PRINTLN("--------------------\n");
                 break;
+        }
+    };
+
+    while (Serial.available()) {
+        handleCommand(Serial.read());
+    }
+
+    while (BluetoothUART::available()) {
+        const int value = BluetoothUART::read();
+        if (value >= 0) {
+            handleCommand(static_cast<char>(value));
         }
     }
 

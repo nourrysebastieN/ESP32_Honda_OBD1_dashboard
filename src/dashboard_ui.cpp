@@ -9,6 +9,7 @@
 #include "dashboard_ui.h"
 #include "config.h"
 #include "haltech_widget.h"
+#include "bluetooth_uart.h"
 #include <cmath>
 #include <cstdio>
 
@@ -35,6 +36,8 @@ static DashboardScreen currentScreen = DashboardScreen::MAIN;
 
 // Settings
 static bool useMetricUnits = true;
+static lv_obj_t* bleSwitch = nullptr;
+static lv_obj_t* bleStatusLabel = nullptr;
 
 // Colors
 static const lv_color_t COLOR_BG = lv_color_hex(0x050506);
@@ -255,6 +258,26 @@ static const char* lookupDtcDescription(uint8_t code) {
     return "Unknown code";
 }
 
+static void updateBleStatusLabel(bool enabled) {
+    if (bleStatusLabel == nullptr) {
+        return;
+    }
+    lv_label_set_text(bleStatusLabel, enabled ? "On" : "Off");
+    lv_obj_set_style_text_color(bleStatusLabel, enabled ? COLOR_SUCCESS : COLOR_TEXT_DIM, 0);
+}
+
+static void applyBleToggle(bool enabled) {
+    BluetoothUART::setEnabled(enabled);
+    updateBleStatusLabel(enabled);
+    if (bleSwitch != nullptr) {
+        if (enabled) {
+            lv_obj_add_state(bleSwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(bleSwitch, LV_STATE_CHECKED);
+        }
+    }
+}
+
 static void updateDiagnosticsLabel(const OBD1Data& data) {
     if (dtcLabel == nullptr) {
         return;
@@ -405,12 +428,63 @@ static void createSettingsScreen(void) {
         DashboardUI::switchScreen(DashboardScreen::MAIN);
     }, LV_EVENT_CLICKED, nullptr);
     
-    // Settings placeholder
-    lv_obj_t* infoLabel = lv_label_create(settingsScreen);
-    lv_label_set_text(infoLabel, "Settings options:\n- Units (Metric/Imperial)\n- Brightness\n- Theme\n- Calibration");
-    lv_obj_set_style_text_font(infoLabel, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(infoLabel, COLOR_TEXT_DIM, 0);
-    lv_obj_align(infoLabel, LV_ALIGN_CENTER, 0, 0);
+    // Card container
+    lv_obj_t* card = lv_obj_create(settingsScreen);
+    lv_obj_set_size(card, DISPLAY_WIDTH - 40, DISPLAY_HEIGHT - 120);
+    lv_obj_align(card, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_set_style_bg_color(card, COLOR_PRIMARY, 0);
+    lv_obj_set_style_radius(card, 20, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_all(card, 24, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Title inside card
+    lv_obj_t* cardTitle = lv_label_create(card);
+    lv_label_set_text(cardTitle, "Connectivity");
+    lv_obj_set_style_text_font(cardTitle, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(cardTitle, COLOR_TEXT, 0);
+    lv_obj_align(cardTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    // BLE toggle row
+    lv_obj_t* row = lv_obj_create(card);
+    lv_obj_set_size(row, lv_pct(100), 70);
+    lv_obj_align(row, LV_ALIGN_TOP_LEFT, 0, 40);
+    lv_obj_set_style_bg_color(row, COLOR_ACCENT, 0);
+    lv_obj_set_style_radius(row, 14, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_left(row, 16, 0);
+    lv_obj_set_style_pad_right(row, 16, 0);
+    lv_obj_set_style_pad_top(row, 12, 0);
+    lv_obj_set_style_pad_bottom(row, 12, 0);
+    lv_obj_set_style_pad_row(row, 0, 0);
+    lv_obj_set_style_pad_column(row, 10, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t* bleLabel = lv_label_create(row);
+    lv_label_set_text(bleLabel, "Bluetooth telemetry");
+    lv_obj_set_style_text_font(bleLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(bleLabel, COLOR_TEXT, 0);
+
+    bleStatusLabel = lv_label_create(row);
+    updateBleStatusLabel(BluetoothUART::isEnabled());
+    lv_obj_set_style_text_font(bleStatusLabel, &lv_font_montserrat_16, 0);
+
+    bleSwitch = lv_switch_create(row);
+    lv_obj_add_state(bleSwitch, BluetoothUART::isEnabled() ? LV_STATE_CHECKED : 0);
+    lv_obj_add_event_cb(bleSwitch, [](lv_event_t* e) {
+        const bool en = lv_obj_has_state(static_cast<lv_obj_t*>(lv_event_get_target(e)), LV_STATE_CHECKED);
+        applyBleToggle(en);
+    }, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    // Allow tapping anywhere on the row to toggle
+    lv_obj_add_event_cb(row, [](lv_event_t* e) {
+        if (bleSwitch == nullptr) return;
+        const bool current = lv_obj_has_state(bleSwitch, LV_STATE_CHECKED);
+        applyBleToggle(!current);
+    }, LV_EVENT_CLICKED, nullptr);
 }
 
 /**
