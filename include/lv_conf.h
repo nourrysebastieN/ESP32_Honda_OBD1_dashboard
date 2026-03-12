@@ -26,8 +26,14 @@
  * The Haltech-style widgets use larger shadows and style buffers, so we bump this. */
 #define LV_MEM_SIZE (512 * 1024U)
 
-/* Use the standard `malloc` and `free` from C library */
-#define LV_MEM_CUSTOM 0
+/* Tell LVGL to use its built-in TLSF allocator and allocate the backing pool
+ * via lv_port_heap_alloc_pool() (PSRAM when available). */
+#define LV_USE_STDLIB_MALLOC LV_STDLIB_BUILTIN
+#define LV_USE_STDLIB_STRING LV_STDLIB_CLIB
+#define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
+
+#define LV_MEM_POOL_INCLUDE "lv_port_heap.h"
+#define LV_MEM_POOL_ALLOC   lv_port_heap_alloc_pool
 
 /* Stack size for the LVGL timer task */
 #define LV_DEF_REFR_PERIOD 16  /* 60 FPS refresh rate */

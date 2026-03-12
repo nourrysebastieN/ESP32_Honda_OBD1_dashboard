@@ -27,10 +27,112 @@ static lv_color_t* buf2 = nullptr;
  * For RGB parallel displays, use Bus_Parallel16 instead.
  */
 LGFX::LGFX(void) {
-    // Configure SPI bus
+#if defined(DISPLAY_USE_RGB) && DISPLAY_USE_RGB
+    // Configure panel (RGB / dot-clock, uses PSRAM framebuffer)
+    {
+        auto cfg = _panel_instance.config();
+
+        cfg.memory_width  = DISPLAY_WIDTH;
+        cfg.panel_width   = DISPLAY_WIDTH;
+        cfg.memory_height = DISPLAY_HEIGHT;
+        cfg.panel_height  = DISPLAY_HEIGHT;
+
+        cfg.offset_x = 0;
+        cfg.offset_y = 0;
+
+        _panel_instance.config(cfg);
+    }
+
+    {
+        auto cfg = _panel_instance.config_detail();
+#ifdef BOARD_HAS_PSRAM
+        cfg.use_psram = 1;
+#else
+        cfg.use_psram = 0;
+#endif
+        _panel_instance.config_detail(cfg);
+    }
+
+    // Configure RGB bus (16-bit)
     {
         auto cfg = _bus_instance.config();
-        
+        cfg.panel = &_panel_instance;
+
+        cfg.pin_d0  = TFT_B0;
+        cfg.pin_d1  = TFT_B1;
+        cfg.pin_d2  = TFT_B2;
+        cfg.pin_d3  = TFT_B3;
+        cfg.pin_d4  = TFT_B4;
+        cfg.pin_d5  = TFT_G0;
+        cfg.pin_d6  = TFT_G1;
+        cfg.pin_d7  = TFT_G2;
+        cfg.pin_d8  = TFT_G3;
+        cfg.pin_d9  = TFT_G4;
+        cfg.pin_d10 = TFT_G5;
+        cfg.pin_d11 = TFT_R0;
+        cfg.pin_d12 = TFT_R1;
+        cfg.pin_d13 = TFT_R2;
+        cfg.pin_d14 = TFT_R3;
+        cfg.pin_d15 = TFT_R4;
+
+        cfg.pin_henable = TFT_DE;
+        cfg.pin_vsync   = TFT_VSYNC;
+        cfg.pin_hsync   = TFT_HSYNC;
+        cfg.pin_pclk    = TFT_PCLK;
+        cfg.freq_write  = TFT_PCLK_FREQ;
+
+        cfg.hsync_polarity    = TFT_HSYNC_POLARITY;
+        cfg.hsync_front_porch = TFT_HSYNC_FRONT_PORCH;
+        cfg.hsync_pulse_width = TFT_HSYNC_PULSE_WIDTH;
+        cfg.hsync_back_porch  = TFT_HSYNC_BACK_PORCH;
+        cfg.vsync_polarity    = TFT_VSYNC_POLARITY;
+        cfg.vsync_front_porch = TFT_VSYNC_FRONT_PORCH;
+        cfg.vsync_pulse_width = TFT_VSYNC_PULSE_WIDTH;
+        cfg.vsync_back_porch  = TFT_VSYNC_BACK_PORCH;
+        cfg.pclk_idle_high    = TFT_PCLK_IDLE_HIGH;
+
+        _bus_instance.config(cfg);
+    }
+    _panel_instance.setBus(&_bus_instance);
+
+    // Backlight (PWM)
+    {
+        auto cfg = _light_instance.config();
+        cfg.pin_bl = TFT_BL;
+#if defined(TFT_BL_INVERT)
+        cfg.invert = TFT_BL_INVERT;
+#endif
+        _light_instance.config(cfg);
+    }
+    _panel_instance.light(&_light_instance);
+
+    // Touch (GT911 over I2C)
+    {
+        auto cfg = _touch_instance.config();
+
+        cfg.x_min = 0;
+        cfg.x_max = DISPLAY_WIDTH;
+        cfg.y_min = 0;
+        cfg.y_max = DISPLAY_HEIGHT;
+        cfg.pin_int = TOUCH_INT;
+        cfg.pin_rst = TOUCH_RST;
+        cfg.bus_shared = false;
+        cfg.offset_rotation = 0;
+
+        cfg.i2c_port = TOUCH_I2C_PORT;
+        cfg.i2c_addr = 0x5D;
+        cfg.pin_sda = TOUCH_SDA;
+        cfg.pin_scl = TOUCH_SCL;
+        cfg.freq = 400000;
+
+        _touch_instance.config(cfg);
+        _panel_instance.setTouch(&_touch_instance);
+    }
+#else
+    // Configure SPI bus (fallback)
+    {
+        auto cfg = _bus_instance.config();
+
         cfg.spi_host = SPI2_HOST;     // SPI2 for ESP32-S3
         cfg.spi_mode = 0;
         cfg.freq_write = 40000000;    // SPI clock for writing (40MHz)
@@ -38,24 +140,24 @@ LGFX::LGFX(void) {
         cfg.spi_3wire = true;
         cfg.use_lock = true;
         cfg.dma_channel = SPI_DMA_CH_AUTO;
-        
+
         cfg.pin_sclk = TFT_SCLK;
         cfg.pin_mosi = TFT_MOSI;
         cfg.pin_miso = TFT_MISO;
         cfg.pin_dc = TFT_DC;
-        
+
         _bus_instance.config(cfg);
         _panel_instance.setBus(&_bus_instance);
     }
-    
+
     // Configure panel
     {
         auto cfg = _panel_instance.config();
-        
+
         cfg.pin_cs = TFT_CS;
         cfg.pin_rst = TFT_RST;
         cfg.pin_busy = -1;
-        
+
         cfg.panel_width = DISPLAY_WIDTH;
         cfg.panel_height = DISPLAY_HEIGHT;
         cfg.offset_x = 0;
@@ -68,14 +170,14 @@ LGFX::LGFX(void) {
         cfg.rgb_order = false;
         cfg.dlen_16bit = false;
         cfg.bus_shared = true;
-        
+
         _panel_instance.config(cfg);
     }
-    
+
     // Configure touch (GT911 capacitive)
     {
         auto cfg = _touch_instance.config();
-        
+
         cfg.x_min = 0;
         cfg.x_max = DISPLAY_WIDTH - 1;
         cfg.y_min = 0;
@@ -84,18 +186,19 @@ LGFX::LGFX(void) {
         cfg.pin_rst = TOUCH_RST;
         cfg.bus_shared = false;
         cfg.offset_rotation = 0;
-        
+
         // I2C configuration
-        cfg.i2c_port = 0;
+        cfg.i2c_port = TOUCH_I2C_PORT;
         cfg.i2c_addr = 0x5D;  // GT911 I2C address
         cfg.pin_sda = TOUCH_SDA;
         cfg.pin_scl = TOUCH_SCL;
         cfg.freq = 400000;
-        
+
         _touch_instance.config(cfg);
         _panel_instance.setTouch(&_touch_instance);
     }
-    
+#endif
+
     setPanel(&_panel_instance);
 }
 

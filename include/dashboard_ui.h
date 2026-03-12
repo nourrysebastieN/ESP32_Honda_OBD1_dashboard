@@ -17,7 +17,6 @@
  */
 enum class DashboardScreen {
     MAIN,       // Main dashboard with gauges
-    DETAILED,   // Detailed data view
     SETTINGS,   // Settings menu
     DIAGNOSTICS // Diagnostic codes view
 };
@@ -37,6 +36,12 @@ namespace DashboardUI {
      * @param data OBD1 data structure with current values
      */
     void update(const OBD1Data& data);
+
+    /**
+     * @brief Register a callback to clear ECU DTCs
+     * @param callback Function invoked when user requests DTC clear
+     */
+    void setClearDtcCallback(bool (*callback)(void));
     
     /**
      * @brief Switch to a different screen

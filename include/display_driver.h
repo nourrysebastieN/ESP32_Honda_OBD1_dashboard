@@ -9,8 +9,19 @@
 #ifndef DISPLAY_DRIVER_H
 #define DISPLAY_DRIVER_H
 
+#include "config.h"
+
+#ifndef LGFX_USE_V1
+#define LGFX_USE_V1
+#endif
+
 #include <LovyanGFX.hpp>
 #include <lvgl.h>
+
+#if defined(DISPLAY_USE_RGB) && DISPLAY_USE_RGB
+  #include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
+  #include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
+#endif
 
 /**
  * @brief Custom LGFX class for the 7" display
@@ -20,11 +31,18 @@
  * Modify the Bus_SPI or Bus_Parallel configuration based on your display type.
  */
 class LGFX : public lgfx::LGFX_Device {
-    // Define the bus type based on your display interface
-    // Use Bus_SPI for SPI displays or Bus_Parallel16 for RGB parallel displays
-    lgfx::Bus_SPI _bus_instance;
+    // Define the bus/panel type based on your display interface.
+    // Makerfabs MaTouch 7" uses an RGB interface; SPI fallback remains for other boards.
+#if defined(DISPLAY_USE_RGB) && DISPLAY_USE_RGB
+    lgfx::Bus_RGB     _bus_instance;
+    lgfx::Panel_RGB   _panel_instance;
+    lgfx::Light_PWM   _light_instance;
+    lgfx::Touch_GT911 _touch_instance;    // GT911 capacitive touch
+#else
+    lgfx::Bus_SPI     _bus_instance;
     lgfx::Panel_ILI9488 _panel_instance;  // Change panel type as needed
     lgfx::Touch_GT911 _touch_instance;    // GT911 capacitive touch
+#endif
 
 public:
     LGFX(void);

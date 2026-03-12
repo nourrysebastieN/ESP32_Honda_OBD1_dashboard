@@ -21,6 +21,7 @@
 #include "display_driver.h"
 #include "dashboard_ui.h"
 #include "obd1_handler.h"
+#include "bluetooth_uart.h"
 
 // Task handles
 static TaskHandle_t lvglTaskHandle = nullptr;
@@ -29,6 +30,29 @@ static TaskHandle_t obd1TaskHandle = nullptr;
 // Timing
 static unsigned long lastLvglUpdate = 0;
 static unsigned long lastObd1Update = 0;
+
+constexpr uint32_t KEY_HOLD_TIMEOUT_MS = 200;
+constexpr float RPM_RAMP_UP_PER_SEC = 4500.0f;
+constexpr float RPM_RAMP_DOWN_PER_SEC = 5500.0f;
+constexpr float SPEED_RAMP_UP_PER_SEC = 120.0f;
+constexpr float SPEED_RAMP_DOWN_PER_SEC = 160.0f;
+constexpr float TEMP_RAMP_UP_PER_SEC = 35.0f;
+constexpr float TEMP_RAMP_DOWN_PER_SEC = 45.0f;
+
+static float simRpm = 0.0f;
+static float simSpeed = 0.0f;
+static float simTemp = static_cast<float>(TEMP_MIN);
+static unsigned long lastRKeyMs = 0;
+static unsigned long lastSKeyMs = 0;
+static unsigned long lastTKeyMs = 0;
+static bool rampRpmActive = false;
+static bool rampSpeedActive = false;
+static bool rampTempActive = false;
+static unsigned long lastSimTickMs = 0;
+
+static bool onClearDtcRequest(void) {
+    return OBD1Handler::clearDTCs();
+}
 
 /**
  * @brief LVGL update task
@@ -50,6 +74,7 @@ void lvglTask(void* parameter) {
 void onOBD1DataReceived(const OBD1Data& data) {
     // Update the dashboard UI with new data
     DashboardUI::update(data);
+    BluetoothUART::sendObdSnapshot(data);
 }
 
 /**
@@ -60,6 +85,11 @@ bool initializeSystem(void) {
     // Initialize serial for debug output
     Serial.begin(DEBUG_BAUD_RATE);
     delay(1000);  // Wait for serial to initialize
+
+    // Initialize BLE UART bridge (non-fatal if unavailable)
+    if (!BluetoothUART::init()) {
+        DEBUG_PRINTLN("WARNING: BLE UART init failed, continuing without it");
+    }
     
     DEBUG_PRINTLN("\n================================");
     DEBUG_PRINTLN("ESP32-S3 Honda OBD1 Dashboard");
@@ -92,6 +122,7 @@ bool initializeSystem(void) {
     
     // Set OBD1 data callback
     OBD1Handler::setDataCallback(onOBD1DataReceived);
+    DashboardUI::setClearDtcCallback(onClearDtcRequest);
     
     // Create LVGL task on Core 1
     xTaskCreatePinnedToCore(
@@ -107,6 +138,7 @@ bool initializeSystem(void) {
     DEBUG_PRINTLN("\n================================");
     DEBUG_PRINTLN("System initialization complete!");
     DEBUG_PRINTLN("================================\n");
+    Serial.println("System initialization complete!");
     
     return true;
 }
@@ -120,12 +152,18 @@ void setup() {
     if (!initializeSystem()) {
         DEBUG_PRINTLN("FATAL: System initialization failed!");
         // Blink LED to indicate error
-        pinMode(LED_PIN, OUTPUT);
+        if (LED_PIN >= 0) {
+            pinMode(LED_PIN, OUTPUT);
+        }
         while (true) {
-            digitalWrite(LED_PIN, HIGH);
-            delay(200);
-            digitalWrite(LED_PIN, LOW);
-            delay(200);
+            if (LED_PIN >= 0) {
+                digitalWrite(LED_PIN, HIGH);
+                delay(200);
+                digitalWrite(LED_PIN, LOW);
+                delay(200);
+            } else {
+                delay(1000);
+            }
         }
     }
     
@@ -145,57 +183,134 @@ void setup() {
 void loop() {
     // The main work is done in FreeRTOS tasks
     // This loop handles any non-time-critical operations
+    BluetoothUART::loop();
     
     // Check for serial commands (for debugging)
-    if (Serial.available()) {
-        char cmd = Serial.read();
-        
+    const unsigned long now = millis();
+    const float dt = (lastSimTickMs == 0) ? 0.0f : (now - lastSimTickMs) / 1000.0f;
+    lastSimTickMs = now;
+
+    auto handleCommand = [&](char cmd) {
         switch (cmd) {
             case '1':
                 DashboardUI::switchScreen(DashboardScreen::MAIN);
                 DEBUG_PRINTLN("Switched to Main screen");
                 break;
             case '2':
-                DashboardUI::switchScreen(DashboardScreen::DETAILED);
-                DEBUG_PRINTLN("Switched to Detailed screen");
-                break;
-            case '3':
                 DashboardUI::switchScreen(DashboardScreen::SETTINGS);
                 DEBUG_PRINTLN("Switched to Settings screen");
                 break;
-            case '4':
+            case '3':
                 DashboardUI::switchScreen(DashboardScreen::DIAGNOSTICS);
                 DEBUG_PRINTLN("Switched to Diagnostics screen");
                 break;
             case 'r':
-                // Simulate RPM change for testing
-                DashboardUI::setRPM(random(800, 7000));
+                lastRKeyMs = now;
+                rampRpmActive = true;
+                if (simRpm <= 0.0f) {
+                    simRpm = 0.0f;
+                }
                 break;
             case 's':
-                // Simulate speed change for testing
-                DashboardUI::setSpeed(random(0, 160));
+                lastSKeyMs = now;
+                rampSpeedActive = true;
+                if (simSpeed <= 0.0f) {
+                    simSpeed = 0.0f;
+                }
                 break;
             case 't':
-                // Simulate temperature change for testing
-                DashboardUI::setCoolantTemp(random(60, 120));
+                lastTKeyMs = now;
+                rampTempActive = true;
+                if (simTemp < static_cast<float>(TEMP_MIN)) {
+                    simTemp = static_cast<float>(TEMP_MIN);
+                }
                 break;
             case 'i':
                 // Print system info
                 DEBUG_PRINTF("Free Heap: %d bytes\n", ESP.getFreeHeap());
                 DEBUG_PRINTF("Free PSRAM: %d bytes\n", ESP.getFreePsram());
                 DEBUG_PRINTF("OBD1 Connected: %s\n", OBD1Handler::isConnected() ? "Yes" : "No");
+                DEBUG_PRINTF("BLE Connected: %s\n", BluetoothUART::isConnected() ? "Yes" : "No");
                 break;
             case 'h':
             case '?':
                 DEBUG_PRINTLN("\n--- Debug Commands ---");
-                DEBUG_PRINTLN("1-4: Switch screens");
-                DEBUG_PRINTLN("r: Random RPM");
-                DEBUG_PRINTLN("s: Random Speed");
-                DEBUG_PRINTLN("t: Random Temperature");
+                DEBUG_PRINTLN("1-3: Switch screens");
+                DEBUG_PRINTLN("hold r: Ramp RPM");
+                DEBUG_PRINTLN("hold s: Ramp Speed");
+                DEBUG_PRINTLN("hold t: Ramp Temperature");
                 DEBUG_PRINTLN("i: System info");
                 DEBUG_PRINTLN("h/?: This help");
                 DEBUG_PRINTLN("--------------------\n");
                 break;
+        }
+    };
+
+    while (Serial.available()) {
+        handleCommand(Serial.read());
+    }
+
+    while (BluetoothUART::available()) {
+        const int value = BluetoothUART::read();
+        if (value >= 0) {
+            handleCommand(static_cast<char>(value));
+        }
+    }
+
+    if (rampRpmActive) {
+        const bool holding = (now - lastRKeyMs) < KEY_HOLD_TIMEOUT_MS;
+        if (holding) {
+            simRpm += RPM_RAMP_UP_PER_SEC * dt;
+            if (simRpm > RPM_REDLINE) {
+                simRpm = RPM_REDLINE;
+            }
+        } else {
+            simRpm -= RPM_RAMP_DOWN_PER_SEC * dt;
+            if (simRpm < 0.0f) {
+                simRpm = 0.0f;
+            }
+        }
+        DashboardUI::setRPM(static_cast<uint16_t>(simRpm + 0.5f));
+        if (!holding && simRpm <= 0.0f) {
+            rampRpmActive = false;
+        }
+    }
+
+    if (rampSpeedActive) {
+        const bool holding = (now - lastSKeyMs) < KEY_HOLD_TIMEOUT_MS;
+        if (holding) {
+            simSpeed += SPEED_RAMP_UP_PER_SEC * dt;
+            if (simSpeed > SPEED_MAX) {
+                simSpeed = SPEED_MAX;
+            }
+        } else {
+            simSpeed -= SPEED_RAMP_DOWN_PER_SEC * dt;
+            if (simSpeed < 0.0f) {
+                simSpeed = 0.0f;
+            }
+        }
+        DashboardUI::setSpeed(static_cast<uint8_t>(simSpeed + 0.5f));
+        if (!holding && simSpeed <= 0.0f) {
+            rampSpeedActive = false;
+        }
+    }
+
+    if (rampTempActive) {
+        const bool holding = (now - lastTKeyMs) < KEY_HOLD_TIMEOUT_MS;
+        if (holding) {
+            simTemp += TEMP_RAMP_UP_PER_SEC * dt;
+            if (simTemp > TEMP_MAX) {
+                simTemp = TEMP_MAX;
+            }
+        } else {
+            simTemp -= TEMP_RAMP_DOWN_PER_SEC * dt;
+            if (simTemp < static_cast<float>(TEMP_MIN)) {
+                simTemp = static_cast<float>(TEMP_MIN);
+            }
+        }
+        DashboardUI::setCoolantTemp(static_cast<uint8_t>(simTemp + 0.5f));
+        if (!holding && simTemp <= static_cast<float>(TEMP_MIN)) {
+            rampTempActive = false;
         }
     }
     

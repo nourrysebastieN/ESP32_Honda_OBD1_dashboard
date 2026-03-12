@@ -23,13 +23,15 @@ struct OBD1Data {
     uint8_t  coolantTemp;      // Coolant temperature (°C)
     uint8_t  intakeTemp;       // Intake air temperature (°C)
     uint8_t  throttlePosition; // Throttle position (%)
-    uint16_t mapPressure;      // Manifold absolute pressure (kPa)
+    uint16_t mapPressure;      // Manifold absolute pressure (scaled)
     float    o2Voltage;        // O2 sensor voltage
     uint8_t  fuelTrim;         // Short term fuel trim
-    uint8_t  ignitionAdvance;  // Ignition timing advance
-    uint8_t  injectorPulse;    // Injector pulse width
+    uint8_t  ignitionAdvance;  // Ignition timing advance (deg, rounded)
+    uint8_t  injectorPulse;    // Injector pulse width (0.1 ms)
     uint8_t  batteryVoltage;   // Battery voltage * 10 (e.g., 140 = 14.0V)
     bool     checkEngine;      // Check engine light status
+    uint8_t  dtcCount;         // Number of stored DTCs
+    uint8_t  dtcCodes[32];     // Parsed DTC list (0 when unused)
     uint32_t timestamp;        // Last update timestamp
     bool     connected;        // ECU connection status
 };
@@ -109,11 +111,17 @@ namespace OBD1Handler {
     void setDataCallback(void (*callback)(const OBD1Data& data));
     
     /**
-     * @brief Read a specific Honda OBD1 parameter
-     * @param address ECU address to read
-     * @return Raw value from ECU
+     * @brief Read a raw byte from the last datalogging packet
+     * @param index Packet byte index (0-51)
+     * @return Raw value from last packet, or 0xFF if unavailable
      */
-    uint8_t readParameter(uint8_t address);
+    uint8_t readParameter(uint8_t index);
+
+    /**
+     * @brief Clear stored DTCs on the ECU
+     * @return true if the command was sent, false otherwise
+     */
+    bool clearDTCs(void);
 }
 
 #endif /* OBD1_HANDLER_H */
